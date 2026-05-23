@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+
+data/motion_events/
+data/logs/
+
+*.jpg
+*.jpeg
+*.png
+*.mp4
