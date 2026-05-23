@@ -5,6 +5,7 @@ import time
 from config import ensure_project_dirs, validate_config, SEND_COOLDOWN_SECONDS
 from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
+from cpu_stats import CPUStatsReporter
 
 
 send_queue = queue.Queue(maxsize=1)
@@ -45,6 +46,7 @@ def main() -> None:
     ensure_project_dirs()
 
     tdm_client = TDMClient()
+
     camera = CameraMotionDetector()
 
     sender_thread = threading.Thread(
@@ -53,6 +55,18 @@ def main() -> None:
         daemon=True,
     )
     sender_thread.start()
+
+    cpu_stats_reporter = CPUStatsReporter(
+        tdm_client=tdm_client,
+        sample_interval_seconds=60,
+    )
+
+    cpu_stats_thread = threading.Thread(
+        target=cpu_stats_reporter.run_forever,
+        args=(stop_event,),
+        daemon=True,
+    )
+    cpu_stats_thread.start()
 
     camera.open()
 
@@ -64,6 +78,7 @@ def main() -> None:
         while True:
             frame = camera.read_frame()
             motion_detected = camera.detect_motion(frame)
+
             now = time.time()
 
             if motion_detected and now - last_send_time >= SEND_COOLDOWN_SECONDS:
@@ -88,8 +103,14 @@ def main() -> None:
 
     finally:
         stop_event.set()
-        send_queue.put(None)
+
+        try:
+            send_queue.put_nowait(None)
+        except queue.Full:
+            pass
+
         camera.close()
+
         print("[MAIN] Stopped")
 
 
