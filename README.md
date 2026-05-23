@@ -1,0 +1,2 @@
+# SEC
+security on raspberry
