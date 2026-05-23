@@ -100,4 +100,3 @@ def validate_config() -> None:
 
     if GROUP_ID == 0:
         raise RuntimeError("Не найден GROUP_ID. Проверь файл .env")
-PY
