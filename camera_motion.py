@@ -202,6 +202,47 @@ class CameraMotionDetector:
 
         return photo_path
 
+
+
+
+    def save_snapshot_photo(self, frame) -> Path:
+        """
+        Сохраняет обычный контрольный снимок.
+        Используется для ежечасного отчета, даже если движения не было.
+        """
+        PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+    
+        snapshot = frame.copy()
+    
+        timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(
+            snapshot,
+            f"SNAPSHOT {timestamp_text}",
+            (20, snapshot.shape[0] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        photo_path = PHOTO_DIR / f"snapshot_{timestamp}.jpg"
+    
+        ok = cv2.imwrite(
+            str(photo_path),
+            snapshot,
+            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+        )
+    
+        if not ok:
+            raise RuntimeError("Не удалось сохранить snapshot через cv2.imwrite")
+    
+        print(f"[SNAPSHOT] Saved: {photo_path}")
+        self.cleanup_old_photos()
+        return photo_path
+    
+
     def cleanup_old_photos(self) -> None:
         files = sorted(
             glob.glob(str(PHOTO_DIR / "*.jpg")),
