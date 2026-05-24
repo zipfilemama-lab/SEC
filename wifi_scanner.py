@@ -218,8 +218,9 @@ class WiFiScannerReporter:
     self,
     hour_start: datetime,
     hour_end: datetime,
-    summary: dict,
-) -> str:
+    summary: dict,    
+    ) -> str:
+   
     """
     Создает красивый Wi-Fi отчет для TDM.
 
