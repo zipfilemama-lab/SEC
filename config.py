@@ -99,7 +99,7 @@ def validate_config() -> None:
         raise RuntimeError("Не найден TDM_TOKEN. Проверь файл .env")
 
     if GROUP_ID == 0:
-        raise RuntimeError("Не найден GROUP_ID. Проверь файл .env")y
+        raise RuntimeError("Не найден GROUP_ID. Проверь файл .env")
 
 # ============================================================
 # WIFI SCANNER SETTINGS
