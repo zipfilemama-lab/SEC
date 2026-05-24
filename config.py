@@ -99,4 +99,10 @@ def validate_config() -> None:
         raise RuntimeError("Не найден TDM_TOKEN. Проверь файл .env")
 
     if GROUP_ID == 0:
-        raise RuntimeError("Не найден GROUP_ID. Проверь файл .env")
+        raise RuntimeError("Не найден GROUP_ID. Проверь файл .env")y
+
+# ============================================================
+# WIFI SCANNER SETTINGS
+# ============================================================
+WIFI_INTERFACE = os.getenv("WIFI_INTERFACE", "wlan1")
+WIFI_SCAN_INTERVAL_SECONDS = get_env_int("WIFI_SCAN_INTERVAL_SECONDS", 600)
