@@ -156,7 +156,7 @@ def main() -> None:
 
             now_time = time.time()
             now_dt = datetime.now()
-            now_hour = now_dt.replace(minute=0, second=0, microsecond=0)
+            now_hour = now_dt.replace(second=0, microsecond=0)
 
             # 1. Собираем температуру раз в 30 секунд
             if now_time - last_temp_sample_time >= temp_sample_interval:
