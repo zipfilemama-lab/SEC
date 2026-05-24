@@ -7,10 +7,14 @@ from config import (
     ensure_project_dirs,
     validate_config,
     SEND_COOLDOWN_SECONDS,
+    WIFI_INTERFACE,
+    WIFI_SCAN_INTERVAL_SECONDS,
 )
 
 from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
+
+from wifi_scanner import WiFiScannerReporter
 
 
 send_queue = queue.Queue(maxsize=5)
@@ -125,6 +129,12 @@ def main() -> None:
     tdm_client = TDMClient()
     camera = CameraMotionDetector()
 
+    wifi_scanner = WiFiScannerReporter(
+    tdm_client=tdm_client,
+    interface=WIFI_INTERFACE,
+    scan_interval_seconds=WIFI_SCAN_INTERVAL_SECONDS,
+    )
+
     sender_thread = threading.Thread(
         target=sender_worker,
         args=(tdm_client,),
@@ -132,6 +142,13 @@ def main() -> None:
     )
     sender_thread.start()
 
+    wifi_thread = threading.Thread(
+    target=wifi_scanner.run_forever,
+    args=(stop_event,),
+    daemon=True,
+    )
+    wifi_thread.start()
+    
     camera.open()
 
     last_motion_send_time = 0
