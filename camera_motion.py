@@ -20,11 +20,7 @@ from config import (
 
 class CameraMotionDetector:
     """
-    Отвечает только за камеру и обнаружение движения.
-
-    Новое:
-    - запоминает зоны, где произошло движение;
-    - рисует рамки на фото перед сохранением.
+    Отвечает за камеру, поиск движения и сохранение фотографий.
     """
 
     def __init__(self):
@@ -49,13 +45,12 @@ class CameraMotionDetector:
             raise RuntimeError("Не удалось получить первый кадр с камеры")
 
         self.previous_gray = self.prepare_motion_frame(frame)
-
         print("[CAMERA] Camera ready")
 
     def close(self) -> None:
         if self.cap is not None:
             self.cap.release()
-        print("[CAMERA] Camera released")
+            print("[CAMERA] Camera released")
 
     def read_frame(self):
         if self.cap is None:
@@ -70,7 +65,7 @@ class CameraMotionDetector:
     def prepare_motion_frame(self, frame):
         """
         Готовим кадр для поиска движения:
-        - уменьшаем, чтобы Raspberry работал быстрее;
+        - уменьшаем картинку;
         - переводим в серый цвет;
         - размываем шум.
         """
@@ -84,19 +79,17 @@ class CameraMotionDetector:
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
         return gray
 
     def detect_motion(self, frame) -> bool:
         """
         Возвращает True, если движение найдено.
-        Дополнительно сохраняет координаты рамок в self.last_motion_boxes.
+        Также сохраняет координаты рамок в self.last_motion_boxes.
         """
         current_gray = self.prepare_motion_frame(frame)
 
         diff = cv2.absdiff(self.previous_gray, current_gray)
         _, threshold = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-
         dilated = cv2.dilate(threshold, None, iterations=2)
 
         contours, _ = cv2.findContours(
@@ -118,8 +111,6 @@ class CameraMotionDetector:
 
             x, y, w, h = cv2.boundingRect(contour)
 
-            # Если кадр уменьшали для анализа,
-            # надо вернуть координаты рамки к размеру оригинального фото.
             if MOTION_RESIZE_SCALE != 1.0:
                 scale = 1.0 / MOTION_RESIZE_SCALE
                 x = int(x * scale)
@@ -134,12 +125,11 @@ class CameraMotionDetector:
 
     def draw_motion_boxes(self, frame):
         """
-        Рисует рамки на кадре.
+        Рисует рамки на местах движения.
         """
         annotated = frame.copy()
 
         for x, y, w, h in self.last_motion_boxes:
-            # Зеленая рамка
             cv2.rectangle(
                 annotated,
                 (x, y),
@@ -148,7 +138,6 @@ class CameraMotionDetector:
                 3,
             )
 
-            # Подпись над рамкой
             cv2.putText(
                 annotated,
                 "MOTION",
@@ -160,8 +149,8 @@ class CameraMotionDetector:
                 cv2.LINE_AA,
             )
 
-        # Дата и время внизу кадра
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         cv2.putText(
             annotated,
             timestamp_text,
@@ -177,8 +166,7 @@ class CameraMotionDetector:
 
     def save_motion_photo(self, frame) -> Path:
         """
-        Сохраняет фото уже с рамками.
-        Именно это фото потом отправляется в TDM.
+        Сохраняет фото при движении.
         """
         PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -194,27 +182,23 @@ class CameraMotionDetector:
         )
 
         if not ok:
-            raise RuntimeError("Не удалось сохранить фото через cv2.imwrite")
+            raise RuntimeError("Не удалось сохранить фото движения через cv2.imwrite")
 
-        print(f"[PHOTO] Saved with motion boxes: {photo_path}")
-
+        print(f"[PHOTO] Saved motion photo: {photo_path}")
         self.cleanup_old_photos()
-
         return photo_path
-
-
-
 
     def save_snapshot_photo(self, frame) -> Path:
         """
-        Сохраняет обычный контрольный снимок.
-        Используется для ежечасного отчета, даже если движения не было.
+        Сохраняет обычный контрольный снимок для ежечасного отчета.
+        Это фото делается даже если движения не было.
         """
         PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-    
+
         snapshot = frame.copy()
-    
+
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         cv2.putText(
             snapshot,
             f"SNAPSHOT {timestamp_text}",
@@ -225,23 +209,22 @@ class CameraMotionDetector:
             2,
             cv2.LINE_AA,
         )
-    
+
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         photo_path = PHOTO_DIR / f"snapshot_{timestamp}.jpg"
-    
+
         ok = cv2.imwrite(
             str(photo_path),
             snapshot,
             [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
         )
-    
+
         if not ok:
-            raise RuntimeError("Не удалось сохранить snapshot через cv2.imwrite")
-    
-        print(f"[SNAPSHOT] Saved: {photo_path}")
+            raise RuntimeError("Не удалось сохранить контрольный снимок через cv2.imwrite")
+
+        print(f"[SNAPSHOT] Saved hourly snapshot: {photo_path}")
         self.cleanup_old_photos()
         return photo_path
-    
 
     def cleanup_old_photos(self) -> None:
         files = sorted(
