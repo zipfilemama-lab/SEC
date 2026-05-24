@@ -215,87 +215,225 @@ class WiFiScannerReporter:
         return "почти не изменился"
 
     def build_report_message(
-        self,
-        hour_start: datetime,
-        hour_end: datetime,
-        summary: dict,
-    ) -> str:
+    self,
+    hour_start: datetime,
+    hour_end: datetime,
+    summary: dict,
+) -> str:
+    """
+    Создает красивый Wi-Fi отчет для TDM.
+
+    Формат:
+    - короткая шапка;
+    - новые сети;
+    - пропавшие сети;
+    - сильный сигнал;
+    - средний сигнал;
+    - слабый сигнал;
+    - итог.
+    """
+
+    current_ssids = set(summary.keys())
+    previous_ssids = set(self.previous_hour_summary.keys())
+
+    new_networks = sorted(current_ssids - previous_ssids)
+    disappeared_networks = sorted(previous_ssids - current_ssids)
+
+    def network_signal_group(item):
         """
-        Создает текст сообщения для TDM.
+        Делим сети по среднему сигналу.
+        nmcli SIGNAL показывает проценты.
+        """
+        avg_signal = item["avg_signal"]
+
+        if avg_signal >= 70:
+            return "strong"
+        if avg_signal >= 40:
+            return "medium"
+        return "weak"
+
+    def signal_emoji(avg_signal):
+        if avg_signal >= 70:
+            return "🟢"
+        if avg_signal >= 40:
+            return "🟡"
+        return "🔴"
+
+    def change_emoji(delta):
+        if delta >= 5:
+            return "⬆️"
+        if delta <= -5:
+            return "⬇️"
+        return "➖"
+
+    def clean_list(values):
+        """
+        Красиво склеивает каналы/частоты/защиту.
+        """
+        values = [str(v) for v in values if str(v).strip()]
+        if not values:
+            return "unknown"
+        return "/".join(values)
+
+    def format_network(item):
+        """
+        Формат одной сети.
+        Вместо длинной строки делаем 4 короткие строки.
         """
 
-        current_ssids = set(summary.keys())
-        previous_ssids = set(self.previous_hour_summary.keys())
+        ssid = item["ssid"]
+        avg_signal = item["avg_signal"]
+        min_signal = item["min_signal"]
+        max_signal = item["max_signal"]
 
-        new_networks = sorted(current_ssids - previous_ssids)
-        disappeared_networks = sorted(previous_ssids - current_ssids)
+        delta_inside_hour = item["last_signal"] - item["first_signal"]
 
-        lines = []
-        lines.append("📡 Wi-Fi отчет Raspberry Pi")
-        lines.append("")
-        lines.append(f"Адаптер: {self.interface}")
-        lines.append(f"Период: {hour_start.strftime('%H:%M')}–{hour_end.strftime('%H:%M')}")
-        lines.append(f"Найдено сетей за час: {len(summary)}")
-        lines.append("")
+        channels = clean_list(item["channels"])
+        security = clean_list(item["securities"])
+        count = item["count"]
 
-        if new_networks:
-            lines.append("🟢 Новые сети по сравнению с прошлым часом:")
-            for ssid in new_networks[:10]:
-                lines.append(f"  + {ssid}")
-            if len(new_networks) > 10:
-                lines.append(f"  ...и еще {len(new_networks) - 10}")
-            lines.append("")
+        previous = self.previous_hour_summary.get(ssid)
 
-        if disappeared_networks:
-            lines.append("🔴 Пропали по сравнению с прошлым часом:")
-            for ssid in disappeared_networks[:10]:
-                lines.append(f"  - {ssid}")
-            if len(disappeared_networks) > 10:
-                lines.append(f"  ...и еще {len(disappeared_networks) - 10}")
-            lines.append("")
+        if previous:
+            delta_vs_previous_hour = avg_signal - previous["avg_signal"]
+            previous_line = (
+                f"{change_emoji(delta_vs_previous_hour)} к прошлому часу: "
+                f"{delta_vs_previous_hour:+.1f}%"
+            )
+        else:
+            previous_line = "🆕 новая сеть"
 
-        if not summary:
-            lines.append("Сети за этот час не найдены.")
-            return "\n".join(lines)
-
-        lines.append("📶 Сети и изменение сигнала:")
-
-        sorted_networks = sorted(
-            summary.values(),
-            key=lambda item: item["avg_signal"],
-            reverse=True,
+        return (
+            f"{signal_emoji(avg_signal)} {ssid}\n"
+            f"   📶 сигнал: {avg_signal:.0f}% средний | {min_signal}–{max_signal}%\n"
+            f"   📍 канал: {channels} | 🔐 {security}\n"
+            f"   📊 замеров: {count} | за час: {delta_inside_hour:+d}%\n"
+            f"   {previous_line}"
         )
 
-        for item in sorted_networks[:15]:
-            ssid = item["ssid"]
-            delta_inside_hour = item["last_signal"] - item["first_signal"]
+    strong_networks = []
+    medium_networks = []
+    weak_networks = []
 
-            previous = self.previous_hour_summary.get(ssid)
-            if previous:
-                delta_vs_previous_hour = item["avg_signal"] - previous["avg_signal"]
-                previous_text = (
-                    f", к прошлому часу: {delta_vs_previous_hour:+.1f}% "
-                    f"({self.signal_comment(delta_vs_previous_hour)})"
-                )
-            else:
-                previous_text = ", новая сеть"
+    for item in summary.values():
+        group = network_signal_group(item)
 
-            channels = ",".join(item["channels"])
-            security = ",".join(item["securities"])
+        if group == "strong":
+            strong_networks.append(item)
+        elif group == "medium":
+            medium_networks.append(item)
+        else:
+            weak_networks.append(item)
 
-            lines.append(
-                f"- {ssid}: средний {item['avg_signal']:.0f}%, "
-                f"мин {item['min_signal']}%, макс {item['max_signal']}%, "
-                f"за час {delta_inside_hour:+d}% "
-                f"({self.signal_comment(delta_inside_hour)})"
-                f"{previous_text}; канал {channels}; защита {security}; "
-                f"замеров {item['count']}"
-            )
+    strong_networks = sorted(
+        strong_networks,
+        key=lambda item: item["avg_signal"],
+        reverse=True,
+    )
 
-        if len(sorted_networks) > 15:
-            lines.append(f"...и еще {len(sorted_networks) - 15} сетей")
+    medium_networks = sorted(
+        medium_networks,
+        key=lambda item: item["avg_signal"],
+        reverse=True,
+    )
 
+    weak_networks = sorted(
+        weak_networks,
+        key=lambda item: item["avg_signal"],
+        reverse=True,
+    )
+
+    strengthened_count = 0
+    weakened_count = 0
+    stable_count = 0
+
+    for item in summary.values():
+        delta = item["last_signal"] - item["first_signal"]
+
+        if delta >= 5:
+            strengthened_count += 1
+        elif delta <= -5:
+            weakened_count += 1
+        else:
+            stable_count += 1
+
+    lines = []
+
+    lines.append("📡 Wi-Fi отчет Raspberry Pi")
+    lines.append("")
+    lines.append(f"🧩 Адаптер: Alfa {self.interface}")
+    lines.append(f"🕐 Период: {hour_start.strftime('%H:%M')}–{hour_end.strftime('%H:%M')}")
+    lines.append(f"📍 Найдено сетей: {len(summary)}")
+    lines.append("")
+
+    if new_networks:
+        lines.append("🆕 Новые сети:")
+        for ssid in new_networks[:10]:
+            lines.append(f"   + {ssid}")
+
+        if len(new_networks) > 10:
+            lines.append(f"   …и еще {len(new_networks) - 10}")
+
+        lines.append("")
+
+    if disappeared_networks:
+        lines.append("❌ Пропали сети:")
+        for ssid in disappeared_networks[:10]:
+            lines.append(f"   - {ssid}")
+
+        if len(disappeared_networks) > 10:
+            lines.append(f"   …и еще {len(disappeared_networks) - 10}")
+
+        lines.append("")
+    else:
+        lines.append("❌ Пропали сети: 0")
+        lines.append("")
+
+    if not summary:
+        lines.append("Сети за этот час не найдены.")
         return "\n".join(lines)
+
+    if strong_networks:
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("🟢 Сильный сигнал")
+        lines.append("━━━━━━━━━━━━━━")
+
+        for item in strong_networks[:5]:
+            lines.append(format_network(item))
+            lines.append("")
+
+    if medium_networks:
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("🟡 Средний сигнал")
+        lines.append("━━━━━━━━━━━━━━")
+
+        for item in medium_networks[:7]:
+            lines.append(format_network(item))
+            lines.append("")
+
+    if weak_networks:
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("🔴 Слабый сигнал")
+        lines.append("━━━━━━━━━━━━━━")
+
+        for item in weak_networks[:7]:
+            lines.append(format_network(item))
+            lines.append("")
+
+        if len(weak_networks) > 7:
+            lines.append(f"…и еще слабых сетей: {len(weak_networks) - 7}")
+            lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append("📊 Итог")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"⬆️ Усилились: {strengthened_count}")
+    lines.append(f"⬇️ Ослабли: {weakened_count}")
+    lines.append(f"➖ Почти без изменений: {stable_count}")
+    lines.append(f"🆕 Новые: {len(new_networks)}")
+    lines.append(f"❌ Пропали: {len(disappeared_networks)}")
+
+    return "\n".join(lines)
 
     def send_hourly_report(
         self,
