@@ -214,8 +214,7 @@ def main() -> None:
 
             # 3. Обычная логика движения
             motion_detected = camera.detect_motion(frame)
-
-               if motion_detected:
+            if motion_detected:
                     motion_count += 1
                       if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
                       print("[MOTION] Motion detected")
