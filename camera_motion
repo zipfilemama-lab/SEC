@@ -15,6 +15,7 @@ from config import (
     JPEG_QUALITY,
     MOTION_AREA_THRESHOLD,
     MOTION_RESIZE_SCALE,
+    MOTION_PIXEL_THRESHOLD,
 )
 
 
