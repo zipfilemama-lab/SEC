@@ -215,27 +215,27 @@ def main() -> None:
             # 3. Обычная логика движения
             motion_detected = camera.detect_motion(frame)
 
-           if motion_detected:
-                motion_count += 1
-            
-                if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
-                    print("[MOTION] Motion detected")
-            
-                    try:
-                        # 1. Запускаем движение сервоприводов
-                        # async = в отдельном потоке, чтобы не тормозить камеру
-                        servo_controller.alert_motion_async()
-            
-                        # 2. Сохраняем фото
-                        photo_path = camera.save_motion_photo(frame.copy())
-            
-                        # 3. Отправляем фото в TDM через очередь
-                        enqueue_photo(photo_path, " Обнаружено движение. Робот активирован.")
-            
-                        last_motion_send_time = now_time
-            
-                    except Exception as error:
-                        print("[MOTION ERROR]", error)
+               if motion_detected:
+                    motion_count += 1
+                
+                    if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
+                        print("[MOTION] Motion detected")
+                
+                        try:
+                            # 1. Запускаем движение сервоприводов
+                            # async = в отдельном потоке, чтобы не тормозить камеру
+                            servo_controller.alert_motion_async()
+                
+                            # 2. Сохраняем фото
+                            photo_path = camera.save_motion_photo(frame.copy())
+                
+                            # 3. Отправляем фото в TDM через очередь
+                            enqueue_photo(photo_path, " Обнаружено движение. Робот активирован.")
+                
+                            last_motion_send_time = now_time
+                
+                        except Exception as error:
+                            print("[MOTION ERROR]", error)
 
             time.sleep(0.03)
 
