@@ -217,9 +217,8 @@ def main() -> None:
 
                if motion_detected:
                     motion_count += 1
-                
-                    if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
-                        print("[MOTION] Motion detected")
+                      if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
+                      print("[MOTION] Motion detected")
                 
                         try:
                             # 1. Запускаем движение сервоприводов
