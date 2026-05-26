@@ -10,6 +10,7 @@ from config import (
     SEND_COOLDOWN_SECONDS,
     WIFI_INTERFACE,
     WIFI_SCAN_INTERVAL_SECONDS,
+    MOTION_FRAMES_REQUIRED,
 )
 
 from camera_motion import CameraMotionDetector
