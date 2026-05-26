@@ -14,7 +14,7 @@ from config import (
 from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
 from wifi_scanner import WiFiScannerReporter
-from servo_controller import ServoController
+#from servo_controller import ServoController
 
 
 send_queue = queue.Queue(maxsize=5)
@@ -121,7 +121,7 @@ def main() -> None:
 
     tdm_client = TDMClient()
     camera = CameraMotionDetector()
-    servo_controller = ServoController()
+    #servo_controller = ServoController()
 
     wifi_scanner = WiFiScannerReporter(
         tdm_client=tdm_client,
@@ -144,7 +144,7 @@ def main() -> None:
     wifi_thread.start()
 
     camera.open()
-    servo_controller.open()
+  # servo_controller.open()
 
     last_motion_send_time = 0
 
@@ -222,7 +222,7 @@ def main() -> None:
                     print("[MOTION] Confirmed motion detected")
 
                     try:
-                        servo_controller.alert_motion_async()
+                     #   servo_controller.alert_motion_async()
 
                         photo_path = camera.save_motion_photo(frame.copy())
 
@@ -249,7 +249,7 @@ def main() -> None:
         stop_event.set()
         send_queue.put(None)
         camera.close()
-        servo_controller.close()
+      #  servo_controller.close()
         print("[MAIN] Stopped")
 
 
