@@ -2,7 +2,6 @@ import queue
 import threading
 import time
 from datetime import datetime
-# from servo_controller import ServoController
 
 from config import (
     ensure_project_dirs,
@@ -10,29 +9,21 @@ from config import (
     SEND_COOLDOWN_SECONDS,
     WIFI_INTERFACE,
     WIFI_SCAN_INTERVAL_SECONDS,
-    )
+)
 
 from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
-
 from wifi_scanner import WiFiScannerReporter
-
-# from servo_controller import ServoController
+from servo_controller import ServoController
 
 
 send_queue = queue.Queue(maxsize=5)
 stop_event = threading.Event()
-# servo_controller = ServoController()
+
 
 def read_cpu_temp() -> float | None:
     """
     Читает температуру CPU Raspberry Pi.
-
-    Raspberry хранит температуру здесь:
-    /sys/class/thermal/thermal_zone0/temp
-
-    Пример:
-    48000 = 48.0 °C
     """
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r", encoding="utf-8") as file:
@@ -83,10 +74,7 @@ def format_hourly_report(
 
 def sender_worker(tdm_client: TDMClient) -> None:
     """
-    Отдельный поток отправки сообщений в TDM.
-
-    В очередь кладем пару:
-    (image_path, message)
+    Отдельный поток отправки фото в TDM.
     """
     while not stop_event.is_set():
         try:
@@ -104,8 +92,10 @@ def sender_worker(tdm_client: TDMClient) -> None:
             print(f"[SENDER] Sending image: {image_path}")
             tdm_client.send_image(image_path, message)
             print("[SENDER] Sent successfully")
+
         except Exception as error:
             print("[SENDER ERROR]", error)
+
         finally:
             send_queue.task_done()
 
@@ -131,11 +121,12 @@ def main() -> None:
 
     tdm_client = TDMClient()
     camera = CameraMotionDetector()
+    servo_controller = ServoController()
 
     wifi_scanner = WiFiScannerReporter(
-    tdm_client=tdm_client,
-    interface=WIFI_INTERFACE,
-    scan_interval_seconds=WIFI_SCAN_INTERVAL_SECONDS,
+        tdm_client=tdm_client,
+        interface=WIFI_INTERFACE,
+        scan_interval_seconds=WIFI_SCAN_INTERVAL_SECONDS,
     )
 
     sender_thread = threading.Thread(
@@ -146,15 +137,14 @@ def main() -> None:
     sender_thread.start()
 
     wifi_thread = threading.Thread(
-    target=wifi_scanner.run_forever,
-    args=(stop_event,),
-    daemon=True,
+        target=wifi_scanner.run_forever,
+        args=(stop_event,),
+        daemon=True,
     )
     wifi_thread.start()
-    
-    camera.open()
 
-    # servo_controller.open()
+    camera.open()
+    servo_controller.open()
 
     last_motion_send_time = 0
 
@@ -169,8 +159,12 @@ def main() -> None:
 
     temp_samples: list[float] = []
     motion_count = 0
+
+    # Движение должно подтвердиться несколько кадров подряд.
+    # Это снижает ложные и слишком частые сработки.
     motion_confirm_frames = 0
     MOTION_CONFIRM_FRAMES = 3
+
     try:
         print("[MAIN] Started. Press Ctrl+C to stop.")
 
@@ -214,30 +208,37 @@ def main() -> None:
                 motion_count = 0
 
             # 3. Обычная логика движения
-           
             motion_detected = camera.detect_motion(frame)
-            if motion_detected:
-                    motion_confirm_frames += 1
-            else:
-                    motion_confirm_frames = 0
-                
-            if motion_confirm_frames >= MOTION_CONFIRM_FRAMES:
-                    motion_count += 1
-                
-                    if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
-                        print("[MOTION] Confirmed motion detected")
-                
-                        try:
-                            servo_controller.alert_motion_async()
-                            photo_path = camera.save_motion_photo(frame.copy())
-                            enqueue_photo(photo_path, "🚨 Обнаружено движение. Робот активирован.")
-                            last_motion_send_time = now_time
-                
-                        except Exception as error:
-                            print("[MOTION ERROR]", error)
 
-    # Чтобы одно длинное движение не считалось бесконечно каждый кадр
-    motion_confirm_frames = 0
+            if motion_detected:
+                motion_confirm_frames += 1
+            else:
+                motion_confirm_frames = 0
+
+            if motion_confirm_frames >= MOTION_CONFIRM_FRAMES:
+                motion_count += 1
+
+                if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
+                    print("[MOTION] Confirmed motion detected")
+
+                    try:
+                        servo_controller.alert_motion_async()
+
+                        photo_path = camera.save_motion_photo(frame.copy())
+
+                        enqueue_photo(
+                            photo_path,
+                            "🚨 Обнаружено движение. Робот активирован.",
+                        )
+
+                        last_motion_send_time = now_time
+
+                    except Exception as error:
+                        print("[MOTION ERROR]", error)
+
+                # Сбрасываем подтверждение, чтобы одно длинное движение
+                # не считалось новой сработкой каждый кадр.
+                motion_confirm_frames = 0
 
             time.sleep(0.03)
 
@@ -248,7 +249,7 @@ def main() -> None:
         stop_event.set()
         send_queue.put(None)
         camera.close()
-       # servo_controller.close()
+        servo_controller.close()
         print("[MAIN] Stopped")
 
 
