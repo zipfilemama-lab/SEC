@@ -169,7 +169,8 @@ def main() -> None:
 
     temp_samples: list[float] = []
     motion_count = 0
-
+    motion_confirm_frames = 0
+    MOTION_CONFIRM_FRAMES = 3
     try:
         print("[MAIN] Started. Press Ctrl+C to stop.")
 
@@ -213,27 +214,29 @@ def main() -> None:
                 motion_count = 0
 
             # 3. Обычная логика движения
-            motion_detected = camera.detect_motion(frame)
-            if motion_detected:
+           motion_detected = camera.detect_motion(frame)
+           if motion_detected:
+                motion_confirm_frames += 1
+            else:
+                motion_confirm_frames = 0
+            
+            if motion_confirm_frames >= MOTION_CONFIRM_FRAMES:
                 motion_count += 1
+            
                 if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
-                      print("[MOTION] Motion detected")
-                
-                try:
-                            # 1. Запускаем движение сервоприводов
-                            # async = в отдельном потоке, чтобы не тормозить камеру
-                            # servo_controller.alert_motion_async()
-                
-                            # 2. Сохраняем фото
-                            photo_path = camera.save_motion_photo(frame.copy())
-                
-                            # 3. Отправляем фото в TDM через очередь
-                            enqueue_photo(photo_path, " Обнаружено движение. Робот активирован.")
-                
-                            last_motion_send_time = now_time
-                
-                except Exception as error:
-                            print("[MOTION ERROR]", error)
+                    print("[MOTION] Confirmed motion detected")
+            
+                    try:
+                        servo_controller.alert_motion_async()
+                        photo_path = camera.save_motion_photo(frame.copy())
+                        enqueue_photo(photo_path, "🚨 Обнаружено движение. Робот активирован.")
+                        last_motion_send_time = now_time
+            
+                    except Exception as error:
+                        print("[MOTION ERROR]", error)
+
+    # Чтобы одно длинное движение не считалось бесконечно каждый кадр
+    motion_confirm_frames = 0
 
             time.sleep(0.03)
 
