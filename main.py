@@ -215,11 +215,11 @@ def main() -> None:
             # 3. Обычная логика движения
             motion_detected = camera.detect_motion(frame)
             if motion_detected:
-                    motion_count += 1
-                      if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
+                motion_count += 1
+                if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
                       print("[MOTION] Motion detected")
                 
-                        try:
+                try:
                             # 1. Запускаем движение сервоприводов
                             # async = в отдельном потоке, чтобы не тормозить камеру
                             servo_controller.alert_motion_async()
@@ -232,7 +232,7 @@ def main() -> None:
                 
                             last_motion_send_time = now_time
                 
-                        except Exception as error:
+                except Exception as error:
                             print("[MOTION ERROR]", error)
 
             time.sleep(0.03)
