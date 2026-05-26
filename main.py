@@ -2,6 +2,7 @@ import queue
 import threading
 import time
 from datetime import datetime
+from servo_controller import ServoController
 
 from config import (
     ensure_project_dirs,
@@ -16,10 +17,12 @@ from tdm_client import TDMClient
 
 from wifi_scanner import WiFiScannerReporter
 
+from servo_controller import ServoController
+
 
 send_queue = queue.Queue(maxsize=5)
 stop_event = threading.Event()
-
+servo_controller = ServoController()
 
 def read_cpu_temp() -> float | None:
     """
@@ -151,6 +154,8 @@ def main() -> None:
     
     camera.open()
 
+    servo_controller.open()
+
     last_motion_send_time = 0
 
     last_temp_sample_time = 0
@@ -210,17 +215,25 @@ def main() -> None:
             # 3. Обычная логика движения
             motion_detected = camera.detect_motion(frame)
 
-            if motion_detected:
+           if motion_detected:
                 motion_count += 1
-
+            
                 if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
                     print("[MOTION] Motion detected")
-
+            
                     try:
+                        # 1. Запускаем движение сервоприводов
+                        # async = в отдельном потоке, чтобы не тормозить камеру
+                        servo_controller.alert_motion_async()
+            
+                        # 2. Сохраняем фото
                         photo_path = camera.save_motion_photo(frame.copy())
-                        enqueue_photo(photo_path, "🚨 Обнаружено движение")
+            
+                        # 3. Отправляем фото в TDM через очередь
+                        enqueue_photo(photo_path, " Обнаружено движение. Робот активирован.")
+            
                         last_motion_send_time = now_time
-
+            
                     except Exception as error:
                         print("[MOTION ERROR]", error)
 
@@ -233,6 +246,7 @@ def main() -> None:
         stop_event.set()
         send_queue.put(None)
         camera.close()
+        servo_controller.close()
         print("[MAIN] Stopped")
 
 
