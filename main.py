@@ -214,26 +214,27 @@ def main() -> None:
                 motion_count = 0
 
             # 3. Обычная логика движения
-           motion_detected = camera.detect_motion(frame)
-           if motion_detected:
-                motion_confirm_frames += 1
+           
+            motion_detected = camera.detect_motion(frame)
+            if motion_detected:
+                    motion_confirm_frames += 1
             else:
-                motion_confirm_frames = 0
-            
+                    motion_confirm_frames = 0
+                
             if motion_confirm_frames >= MOTION_CONFIRM_FRAMES:
-                motion_count += 1
-            
-                if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
-                    print("[MOTION] Confirmed motion detected")
-            
-                    try:
-                        servo_controller.alert_motion_async()
-                        photo_path = camera.save_motion_photo(frame.copy())
-                        enqueue_photo(photo_path, "🚨 Обнаружено движение. Робот активирован.")
-                        last_motion_send_time = now_time
-            
-                    except Exception as error:
-                        print("[MOTION ERROR]", error)
+                    motion_count += 1
+                
+                    if now_time - last_motion_send_time >= SEND_COOLDOWN_SECONDS:
+                        print("[MOTION] Confirmed motion detected")
+                
+                        try:
+                            servo_controller.alert_motion_async()
+                            photo_path = camera.save_motion_photo(frame.copy())
+                            enqueue_photo(photo_path, "🚨 Обнаружено движение. Робот активирован.")
+                            last_motion_send_time = now_time
+                
+                        except Exception as error:
+                            print("[MOTION ERROR]", error)
 
     # Чтобы одно длинное движение не считалось бесконечно каждый кадр
     motion_confirm_frames = 0
