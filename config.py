@@ -106,3 +106,25 @@ def validate_config() -> None:
 # ============================================================
 WIFI_INTERFACE = os.getenv("WIFI_INTERFACE", "wlan1")
 WIFI_SCAN_INTERVAL_SECONDS = get_env_int("WIFI_SCAN_INTERVAL_SECONDS", 600)
+
+
+# ============================================================
+# SERVO / PCA9685 SETTINGS
+# ============================================================
+
+SERVO_ENABLED = os.getenv("SERVO_ENABLED", "1") == "1"
+
+SERVO_I2C_BUS = get_env_int("SERVO_I2C_BUS", 1)
+SERVO_I2C_ADDRESS = int(os.getenv("SERVO_I2C_ADDRESS", "0x40"), 16)
+
+SERVO_1_CHANNEL = get_env_int("SERVO_1_CHANNEL", 0)
+SERVO_2_CHANNEL = get_env_int("SERVO_2_CHANNEL", 1)
+
+SERVO_CENTER_ANGLE = get_env_int("SERVO_CENTER_ANGLE", 90)
+
+SERVO_1_ALERT_ANGLE = get_env_int("SERVO_1_ALERT_ANGLE", 150)
+SERVO_2_ALERT_ANGLE = get_env_int("SERVO_2_ALERT_ANGLE", 30)
+
+SERVO_STEP_DELAY = float(os.getenv("SERVO_STEP_DELAY", "0.02"))
+SERVO_HOLD_SECONDS = float(os.getenv("SERVO_HOLD_SECONDS", "0.5"))
+
