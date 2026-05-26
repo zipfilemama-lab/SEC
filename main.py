@@ -2,7 +2,7 @@ import queue
 import threading
 import time
 from datetime import datetime
-from servo_controller import ServoController
+# from servo_controller import ServoController
 
 from config import (
     ensure_project_dirs,
@@ -17,12 +17,12 @@ from tdm_client import TDMClient
 
 from wifi_scanner import WiFiScannerReporter
 
-from servo_controller import ServoController
+# from servo_controller import ServoController
 
 
 send_queue = queue.Queue(maxsize=5)
 stop_event = threading.Event()
-servo_controller = ServoController()
+# servo_controller = ServoController()
 
 def read_cpu_temp() -> float | None:
     """
@@ -154,7 +154,7 @@ def main() -> None:
     
     camera.open()
 
-    servo_controller.open()
+    # servo_controller.open()
 
     last_motion_send_time = 0
 
@@ -222,7 +222,7 @@ def main() -> None:
                 try:
                             # 1. Запускаем движение сервоприводов
                             # async = в отдельном потоке, чтобы не тормозить камеру
-                            servo_controller.alert_motion_async()
+                            # servo_controller.alert_motion_async()
                 
                             # 2. Сохраняем фото
                             photo_path = camera.save_motion_photo(frame.copy())
@@ -244,7 +244,7 @@ def main() -> None:
         stop_event.set()
         send_queue.put(None)
         camera.close()
-        servo_controller.close()
+       # servo_controller.close()
         print("[MAIN] Stopped")
 
 
