@@ -15,12 +15,13 @@ from config import (
 
 class TDMClient:
     """
-    Клиент для отправки сообщений и изображений в TDM.
+    Клиент TDM.
 
-    Логика такая:
-    1. Сначала фото загружается в fileupload.
-    2. TDM возвращает resourceRef.
-    3. Потом мы отправляем сообщение sendImage с этим resourceRef.
+    Умеет:
+    - отправлять текст;
+    - отправлять фото;
+    - читать непрочитанные сообщения;
+    - подтверждать обработанные сообщения.
     """
 
     def __init__(
@@ -59,12 +60,91 @@ class TDMClient:
         }
 
         try:
-            response = self.session.post(url, headers=headers, json=payload, timeout=30)
+            response = self.session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+
+            print("[TDM TEXT] STATUS:", response.status_code)
+            print("[TDM TEXT] RESPONSE:", response.text[:300])
+
             response.raise_for_status()
-            print("[TDM] Text message sent")
             return True
+
         except Exception as error:
             print("[TDM TEXT ERROR]", error)
+            return False
+
+    def get_all_unread_messages(self) -> list[dict]:
+        """
+        Получает непрочитанные сообщения из текущей группы.
+
+        Это простой тестовый вариант.
+        Для боевой версии лучше перейти на SSE.
+        """
+        url = (
+            f"{self.api_base}/botapi/v1/messages/getAllUnreadMessages/"
+            f"{self.workspace_id}/{self.group_id}"
+        )
+
+        headers = self._auth_headers()
+
+        response = self.session.post(
+            url,
+            headers=headers,
+            timeout=30,
+        )
+
+        print("[TDM GET UNREAD] STATUS:", response.status_code)
+
+        response.raise_for_status()
+
+        if not response.text.strip():
+            return []
+
+        data = response.json()
+
+        if isinstance(data, list):
+            return data
+
+        if isinstance(data, dict):
+            return [data]
+
+        return []
+
+    def confirm_messages(self, last_message_id: int) -> bool:
+        """
+        Подтверждает, что сообщения до last_message_id обработаны.
+        """
+        url = (
+            f"{self.api_base}/botapi/v1/messages/confirm/"
+            f"{self.workspace_id}/{self.group_id}"
+        )
+
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json"
+
+        payload = {
+            "lastMessageId": int(last_message_id),
+        }
+
+        try:
+            response = self.session.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+
+            print("[TDM CONFIRM] STATUS:", response.status_code)
+
+            response.raise_for_status()
+            return True
+
+        except Exception as error:
+            print("[TDM CONFIRM ERROR]", error)
             return False
 
     def upload_image(self, image_path: str | Path) -> dict:
@@ -74,13 +154,26 @@ class TDMClient:
             raise FileNotFoundError(f"Файл не найден: {image_path}")
 
         url = f"{self.fileupload_base}/api/v1/upload/image/encryptable"
+
         headers = self._auth_headers()
+
+        # Для TDM имя файла лучше давать латиницей.
+        upload_filename = "motion.jpg"
 
         with image_path.open("rb") as file_object:
             files = {
-                "file": (image_path.name, file_object, "image/jpeg")
+                "file": (upload_filename, file_object, "image/jpeg")
             }
-            response = self.session.post(url, headers=headers, files=files, timeout=60)
+
+            response = self.session.post(
+                url,
+                headers=headers,
+                files=files,
+                timeout=60,
+            )
+
+        print("[TDM UPLOAD] STATUS:", response.status_code)
+        print("[TDM UPLOAD] RESPONSE:", response.text[:300])
 
         response.raise_for_status()
         return response.json()
@@ -89,7 +182,7 @@ class TDMClient:
         self,
         image_path: str | Path,
         upload_result: dict,
-        message: str = "🚨 Обнаружено движение",
+        message: str = "Обнаружено движение",
     ) -> dict:
         image_path = Path(image_path)
 
@@ -111,7 +204,7 @@ class TDMClient:
 
         payload = {
             "image": {
-                "fileName": image_path.name,
+                "fileName": "motion.jpg",
                 "width": original.get("width", 1280),
                 "height": original.get("height", 720),
                 "length": os.path.getsize(image_path),
@@ -127,7 +220,16 @@ class TDMClient:
             "message": message,
         }
 
-        response = self.session.post(url, headers=headers, json=payload, timeout=60)
+        response = self.session.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+
+        print("[TDM SEND IMAGE] STATUS:", response.status_code)
+        print("[TDM SEND IMAGE] RESPONSE:", response.text[:300])
+
         response.raise_for_status()
 
         try:
@@ -135,12 +237,17 @@ class TDMClient:
         except Exception:
             return {"raw_response": response.text}
 
-    def send_image(self, image_path: str | Path, message: str = "🚨 Обнаружено движение") -> bool:
+    def send_image(
+        self,
+        image_path: str | Path,
+        message: str = "Обнаружено движение",
+    ) -> bool:
         try:
             upload_result = self.upload_image(image_path)
             self.send_image_message(image_path, upload_result, message)
             print("[TDM] Image sent")
             return True
+
         except Exception as error:
             print("[TDM IMAGE ERROR]", error)
             return False
