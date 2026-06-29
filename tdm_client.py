@@ -45,14 +45,16 @@ class TDMClient:
             "Accept": "application/json",
         }
 
+    def _json_headers(self) -> dict:
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json"
+        return headers
+
     def send_text_message(self, message: str) -> bool:
         url = (
             f"{self.api_base}/botapi/v1/messages/sendTextMessage/"
             f"{self.workspace_id}/{self.group_id}"
         )
-
-        headers = self._auth_headers()
-        headers["Content-Type"] = "application/json"
 
         payload = {
             "clientRandomId": int(time.time() * 1000),
@@ -62,7 +64,7 @@ class TDMClient:
         try:
             response = self.session.post(
                 url,
-                headers=headers,
+                headers=self._json_headers(),
                 json=payload,
                 timeout=30,
             )
@@ -81,38 +83,47 @@ class TDMClient:
         """
         Получает непрочитанные сообщения из текущей группы.
 
-        Это простой тестовый вариант.
-        Для боевой версии лучше перейти на SSE.
+        Важно:
+        Раньше здесь был POST без json-тела.
+        TDM возвращал 415 Unsupported Media Type.
+        Поэтому отправляем пустой JSON {} и Content-Type: application/json.
         """
         url = (
             f"{self.api_base}/botapi/v1/messages/getAllUnreadMessages/"
             f"{self.workspace_id}/{self.group_id}"
         )
 
-        headers = self._auth_headers()
+        try:
+            response = self.session.post(
+                url,
+                headers=self._json_headers(),
+                json={},
+                timeout=30,
+            )
 
-        response = self.session.post(
-            url,
-            headers=headers,
-            timeout=30,
-        )
+            print("[TDM GET UNREAD] STATUS:", response.status_code)
 
-        print("[TDM GET UNREAD] STATUS:", response.status_code)
+            if response.status_code != 200:
+                print("[TDM GET UNREAD] RESPONSE:", response.text[:500])
 
-        response.raise_for_status()
+            response.raise_for_status()
 
-        if not response.text.strip():
+            if not response.text.strip():
+                return []
+
+            data = response.json()
+
+            if isinstance(data, list):
+                return data
+
+            if isinstance(data, dict):
+                return [data]
+
             return []
 
-        data = response.json()
-
-        if isinstance(data, list):
-            return data
-
-        if isinstance(data, dict):
-            return [data]
-
-        return []
+        except Exception as error:
+            print("[TDM GET UNREAD ERROR]", error)
+            return []
 
     def confirm_messages(self, last_message_id: int) -> bool:
         """
@@ -123,9 +134,6 @@ class TDMClient:
             f"{self.workspace_id}/{self.group_id}"
         )
 
-        headers = self._auth_headers()
-        headers["Content-Type"] = "application/json"
-
         payload = {
             "lastMessageId": int(last_message_id),
         }
@@ -133,12 +141,15 @@ class TDMClient:
         try:
             response = self.session.post(
                 url,
-                headers=headers,
+                headers=self._json_headers(),
                 json=payload,
                 timeout=30,
             )
 
             print("[TDM CONFIRM] STATUS:", response.status_code)
+
+            if response.status_code != 200:
+                print("[TDM CONFIRM] RESPONSE:", response.text[:500])
 
             response.raise_for_status()
             return True
@@ -157,7 +168,6 @@ class TDMClient:
 
         headers = self._auth_headers()
 
-        # Для TDM имя файла лучше давать латиницей.
         upload_filename = "motion.jpg"
 
         with image_path.open("rb") as file_object:
@@ -199,9 +209,6 @@ class TDMClient:
             f"{self.workspace_id}/{self.group_id}"
         )
 
-        headers = self._auth_headers()
-        headers["Content-Type"] = "application/json"
-
         payload = {
             "image": {
                 "fileName": "motion.jpg",
@@ -222,7 +229,7 @@ class TDMClient:
 
         response = self.session.post(
             url,
-            headers=headers,
+            headers=self._json_headers(),
             json=payload,
             timeout=60,
         )
