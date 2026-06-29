@@ -14,7 +14,8 @@ from config import (
 from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
 from wifi_scanner import WiFiScannerReporter
-#from servo_controller import ServoController
+from servo_controller import ServoController
+from tdm_servo_commands import TDMServoCommandListener
 
 
 send_queue = queue.Queue(maxsize=5)
@@ -28,8 +29,7 @@ def read_cpu_temp() -> float | None:
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r", encoding="utf-8") as file:
             raw_value = file.read().strip()
-
-        return int(raw_value) / 1000.0
+            return int(raw_value) / 1000.0
 
     except Exception as error:
         print("[TEMP ERROR]", error)
@@ -54,21 +54,22 @@ def format_hourly_report(
         max_temp = max(temp_samples)
 
         temp_text = (
-            f"🌡 Средняя температура: {avg_temp:.1f} °C\n"
-            f"❄️ Минимальная температура: {min_temp:.1f} °C\n"
-            f"🔥 Максимальная температура: {max_temp:.1f} °C\n"
-            f"🧪 Количество замеров: {len(temp_samples)}"
+            f"Средняя температура: {avg_temp:.1f} °C\n"
+            f"Минимальная температура: {min_temp:.1f} °C\n"
+            f"Максимальная температура: {max_temp:.1f} °C\n"
+            f"Количество замеров: {len(temp_samples)}"
         )
+
     else:
-        temp_text = "🌡 Температура: нет данных"
+        temp_text = "Температура: нет данных"
 
     return (
-        "📊 Ежечасный отчет Raspberry Pi\n\n"
-        f"📅 Дата: {date_text}\n"
-        f"⏱ Период: {hour_start}–{hour_end}\n\n"
+        "Ежечасный отчет Raspberry Pi\n\n"
+        f"Дата: {date_text}\n"
+        f"Период: {hour_start}–{hour_end}\n\n"
         f"{temp_text}\n\n"
-        f"🎥 Сработок камеры за час: {motion_count}\n\n"
-        "📷 Контрольный снимок камеры"
+        f"Сработок камеры за час: {motion_count}\n\n"
+        "Контрольный снимок камеры"
     )
 
 
@@ -79,6 +80,7 @@ def sender_worker(tdm_client: TDMClient) -> None:
     while not stop_event.is_set():
         try:
             task = send_queue.get(timeout=0.5)
+
         except queue.Empty:
             continue
 
@@ -121,12 +123,18 @@ def main() -> None:
 
     tdm_client = TDMClient()
     camera = CameraMotionDetector()
-    #servo_controller = ServoController()
+    servo_controller = ServoController()
 
     wifi_scanner = WiFiScannerReporter(
         tdm_client=tdm_client,
         interface=WIFI_INTERFACE,
         scan_interval_seconds=WIFI_SCAN_INTERVAL_SECONDS,
+    )
+
+    servo_command_listener = TDMServoCommandListener(
+        tdm_client=tdm_client,
+        servo_controller=servo_controller,
+        poll_interval_seconds=5,
     )
 
     sender_thread = threading.Thread(
@@ -144,10 +152,16 @@ def main() -> None:
     wifi_thread.start()
 
     camera.open()
-  # servo_controller.open()
+    servo_controller.open()
+
+    servo_command_thread = threading.Thread(
+        target=servo_command_listener.run_forever,
+        args=(stop_event,),
+        daemon=True,
+    )
+    servo_command_thread.start()
 
     last_motion_send_time = 0
-
     last_temp_sample_time = 0
     temp_sample_interval = 30
 
@@ -167,6 +181,11 @@ def main() -> None:
 
     try:
         print("[MAIN] Started. Press Ctrl+C to stop.")
+        print("[MAIN] TDM servo commands:")
+        print("[MAIN] /servo help")
+        print("[MAIN] /servo 90 90")
+        print("[MAIN] /servo center")
+        print("[MAIN] /servo off")
 
         while True:
             frame = camera.read_frame()
@@ -175,7 +194,7 @@ def main() -> None:
             now_dt = datetime.now()
             now_hour = now_dt.replace(minute=0, second=0, microsecond=0)
 
-            # 1. Собираем температуру раз в 30 секунд
+            # 1. Собираем температуру раз в 30 секунд.
             if now_time - last_temp_sample_time >= temp_sample_interval:
                 cpu_temp = read_cpu_temp()
 
@@ -185,7 +204,7 @@ def main() -> None:
 
                 last_temp_sample_time = now_time
 
-            # 2. Если начался новый час — отправляем отчет с фото
+            # 2. Если начался новый час — отправляем отчет с фото.
             if now_hour > current_report_hour:
                 print("[REPORT] New hour. Sending hourly report with snapshot...")
 
@@ -207,7 +226,7 @@ def main() -> None:
                 temp_samples = []
                 motion_count = 0
 
-            # 3. Обычная логика движения
+            # 3. Обычная логика движения камеры.
             motion_detected = camera.detect_motion(frame)
 
             if motion_detected:
@@ -222,13 +241,16 @@ def main() -> None:
                     print("[MOTION] Confirmed motion detected")
 
                     try:
-                     #   servo_controller.alert_motion_async()
+                        # ВАЖНО:
+                        # Сервоприводы НЕ двигаются автоматически от камеры.
+                        # Управление сервоприводами сейчас только из TDM:
+                        # /servo 90 120
 
                         photo_path = camera.save_motion_photo(frame.copy())
 
                         enqueue_photo(
                             photo_path,
-                            "🚨 Обнаружено движение. Робот активирован.",
+                            "Обнаружено движение. Робот активирован.",
                         )
 
                         last_motion_send_time = now_time
@@ -248,8 +270,17 @@ def main() -> None:
     finally:
         stop_event.set()
         send_queue.put(None)
-        camera.close()
-      #  servo_controller.close()
+
+        try:
+            camera.close()
+        except Exception as error:
+            print("[CAMERA CLOSE ERROR]", error)
+
+        try:
+            servo_controller.close()
+        except Exception as error:
+            print("[SERVO CLOSE ERROR]", error)
+
         print("[MAIN] Stopped")
 
 
