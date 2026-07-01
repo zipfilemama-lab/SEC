@@ -5,6 +5,8 @@ from pathlib import Path
 
 import cv2
 
+from PIL import Image, ImageDraw, ImageFont
+
 from config import (
     PHOTO_DIR,
     MAX_PHOTOS,
@@ -161,6 +163,108 @@ class CameraMotionDetector:
 
         return annotated
 
+    def get_font(self, size=32):
+        """
+        Ищем шрифт, который умеет кириллицу.
+        На Kali/Raspberry чаще всего есть DejaVuSans.
+        """
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                return ImageFont.truetype(font_path, size)
+
+        print("[FONT WARNING] Не найден TTF-шрифт. Кириллица может не отображаться.")
+        return ImageFont.load_default()
+
+    def draw_russian_text_block(self, frame, lines):
+        """
+        Рисует русский текст на кадре через Pillow.
+        OpenCV cv2.putText кириллицу обычно превращает в ?????.
+        """
+        # OpenCV хранит кадр как BGR, Pillow работает с RGB.
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb_frame)
+
+        draw = ImageDraw.Draw(image)
+
+        title_font = self.get_font(34)
+        text_font = self.get_font(26)
+
+        x = 20
+        y = 20
+        padding = 14
+        line_gap = 10
+
+        # Считаем размер фона под текст.
+        text_boxes = []
+
+        for index, line in enumerate(lines):
+            font = title_font if index == 0 else text_font
+            bbox = draw.textbbox((0, 0), line, font=font)
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            text_boxes.append((width, height, font))
+
+        block_width = max(width for width, height, font in text_boxes) + padding * 2
+        block_height = (
+            sum(height for width, height, font in text_boxes)
+            + line_gap * (len(lines) - 1)
+            + padding * 2
+        )
+
+        # Полупрозрачный тёмный фон.
+        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+
+        overlay_draw.rectangle(
+            (x, y, x + block_width, y + block_height),
+            fill=(0, 0, 0, 150),
+        )
+
+        image = Image.alpha_composite(image.convert("RGBA"), overlay)
+
+        draw = ImageDraw.Draw(image)
+
+        current_y = y + padding
+
+        for index, line in enumerate(lines):
+            font = title_font if index == 0 else text_font
+
+            # Белый текст.
+            draw.text(
+                (x + padding, current_y),
+                line,
+                font=font,
+                fill=(255, 255, 255, 255),
+            )
+
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_height = bbox[3] - bbox[1]
+            current_y += line_height + line_gap
+
+        # Возвращаем обратно в формат OpenCV BGR.
+        final_rgb = image.convert("RGB")
+        final_frame = cv2.cvtColor(
+            src=cv2.UMat(cv2.cvtColor(
+                cv2.cvtColor(
+                    __import__("numpy").array(final_rgb),
+                    cv2.COLOR_RGB2BGR
+                ),
+                cv2.COLOR_BGR2RGB
+            )).get(),
+            code=cv2.COLOR_RGB2BGR,
+        )
+
+        # Более простой и надежный возврат через numpy:
+        import numpy as np
+        return cv2.cvtColor(np.array(final_rgb), cv2.COLOR_RGB2BGR)
+
     def save_motion_photo(self, frame) -> Path:
         """
         Сохраняет фото при движении.
@@ -224,39 +328,23 @@ class CameraMotionDetector:
     def save_servo_command_photo(self, frame, command_text: str, result_text: str) -> Path:
         """
         Сохраняет фото после выполнения servo-команды.
-
-        Важно:
-        Текст на фото делаем латиницей, потому что стандартный cv2.putText
-        плохо рисует кириллицу.
+        Тут используем Pillow, чтобы нормально отображалась кириллица.
         """
         if frame is None:
             raise RuntimeError("Нет кадра для фото после servo-команды")
 
         PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
-        annotated = frame.copy()
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         lines = [
-            "SERVO COMMAND EXECUTED",
-            f"CMD: {command_text}",
-            f"RESULT: {result_text}",
+            "Команда выполнена",
+            f"Команда: {command_text}",
+            f"Результат: {result_text}",
             timestamp_text,
         ]
 
-        y = 35
-        for line in lines:
-            cv2.putText(
-                annotated,
-                line,
-                (20, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            y += 35
+        annotated = self.draw_russian_text_block(frame.copy(), lines)
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         photo_path = PHOTO_DIR / f"servo_{timestamp}.jpg"
