@@ -15,7 +15,6 @@ from config import (
     JPEG_QUALITY,
     MOTION_AREA_THRESHOLD,
     MOTION_RESIZE_SCALE,
-    MOTION_AREA_THRESHOLD,
 )
 
 
@@ -106,7 +105,6 @@ class CameraMotionDetector:
 
         for contour in contours:
             area = cv2.contourArea(contour)
-
             if area < MOTION_AREA_THRESHOLD:
                 continue
 
@@ -138,7 +136,6 @@ class CameraMotionDetector:
                 (0, 255, 0),
                 3,
             )
-
             cv2.putText(
                 annotated,
                 "MOTION",
@@ -151,7 +148,6 @@ class CameraMotionDetector:
             )
 
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         cv2.putText(
             annotated,
             timestamp_text,
@@ -172,7 +168,6 @@ class CameraMotionDetector:
         PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
         annotated_frame = self.draw_motion_boxes(frame)
-
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         photo_path = PHOTO_DIR / f"motion_{timestamp}.jpg"
 
@@ -197,7 +192,6 @@ class CameraMotionDetector:
         PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
         snapshot = frame.copy()
-
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         cv2.putText(
@@ -224,6 +218,59 @@ class CameraMotionDetector:
             raise RuntimeError("Не удалось сохранить контрольный снимок через cv2.imwrite")
 
         print(f"[SNAPSHOT] Saved hourly snapshot: {photo_path}")
+        self.cleanup_old_photos()
+        return photo_path
+
+    def save_servo_command_photo(self, frame, command_text: str, result_text: str) -> Path:
+        """
+        Сохраняет фото после выполнения servo-команды.
+
+        Важно:
+        Текст на фото делаем латиницей, потому что стандартный cv2.putText
+        плохо рисует кириллицу.
+        """
+        if frame is None:
+            raise RuntimeError("Нет кадра для фото после servo-команды")
+
+        PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+
+        annotated = frame.copy()
+        timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        lines = [
+            "SERVO COMMAND EXECUTED",
+            f"CMD: {command_text}",
+            f"RESULT: {result_text}",
+            timestamp_text,
+        ]
+
+        y = 35
+        for line in lines:
+            cv2.putText(
+                annotated,
+                line,
+                (20, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            y += 35
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        photo_path = PHOTO_DIR / f"servo_{timestamp}.jpg"
+
+        ok = cv2.imwrite(
+            str(photo_path),
+            annotated,
+            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+        )
+
+        if not ok:
+            raise RuntimeError("Не удалось сохранить фото после servo-команды")
+
+        print(f"[SERVO PHOTO] Saved servo command photo: {photo_path}")
         self.cleanup_old_photos()
         return photo_path
 
