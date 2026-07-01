@@ -26,16 +26,26 @@ class TDMServoCommandListener:
     - не принимает команду, если серво уже двигаются;
     - ограничивает частоту команд;
     - ограничивает число команд в минуту.
+
+    Новая логика:
+    после успешного выполнения команды делаем фото с камеры
+    и отправляем его в TDM с подписью "Команда выполнена".
     """
 
     def __init__(
         self,
         tdm_client,
         servo_controller,
+        camera,
+        enqueue_photo_func,
+        get_latest_frame_func,
         poll_interval_seconds=5,
     ):
         self.tdm_client = tdm_client
         self.servo_controller = servo_controller
+        self.camera = camera
+        self.enqueue_photo_func = enqueue_photo_func
+        self.get_latest_frame_func = get_latest_frame_func
         self.poll_interval_seconds = poll_interval_seconds
 
         self.last_processed_message_id = 0
@@ -76,7 +86,6 @@ class TDMServoCommandListener:
         if not text:
             return None
 
-        # На случай упоминаний в групповом чате.
         text = text.replace("@", " ")
         parts = text.split()
 
@@ -132,6 +141,7 @@ class TDMServoCommandListener:
             "/servo 70 110 — первый на 70°, второй на 110°\n"
             "/servo center — вернуть оба в центр\n"
             "/servo off — отключить PWM-сигнал\n\n"
+            "После успешной команды бот отправляет фото с камеры.\n\n"
             "Ограничения безопасности:\n"
             f"углы: {SERVO_MIN_ANGLE}–{SERVO_MAX_ANGLE}°\n"
             f"не чаще 1 команды в {SERVO_COMMAND_COOLDOWN_SECONDS} сек.\n"
@@ -190,6 +200,44 @@ class TDMServoCommandListener:
         except Exception as error:
             print("[TDM SERVO SEND ERROR]", error)
 
+    def send_completion_photo(self, command_text: str, result_text: str):
+        """
+        Берёт последний кадр с камеры, сохраняет фото с меткой команды
+        и ставит его в очередь отправки в TDM.
+        """
+        try:
+            frame = self.get_latest_frame_func()
+
+            if frame is None:
+                # fallback: пробуем взять новый кадр прямо с камеры
+                frame = self.camera.read_frame()
+
+            if frame is None:
+                self.safe_send_text(
+                    "Команда выполнена, но не удалось получить кадр с камеры для фото."
+                )
+                return
+
+            photo_path = self.camera.save_servo_command_photo(
+                frame=frame,
+                command_text=command_text,
+                result_text=result_text,
+            )
+
+            message = (
+                "Команда выполнена.\n"
+                f"Команда: {command_text}\n"
+                f"Результат: {result_text}"
+            )
+
+            self.enqueue_photo_func(photo_path, message)
+
+        except Exception as error:
+            self.safe_send_text(
+                "Команда выполнена, но фото после поворота отправить не удалось: "
+                f"{error}"
+            )
+
     def handle_message(self, message):
         message_id = int(message.get("id", 0))
         text = message.get("message", "")
@@ -205,8 +253,6 @@ class TDMServoCommandListener:
             self.last_processed_message_id = message_id
             return
 
-        # Важно: подтверждаем даже не-командные сообщения,
-        # чтобы они не приходили снова и снова.
         if parsed is None:
             self.last_processed_message_id = message_id
             return
@@ -234,7 +280,6 @@ class TDMServoCommandListener:
             self.last_processed_message_id = message_id
             return
 
-        # center и move — это движение, значит проверяем лимиты.
         allowed, reason = self.check_rate_limit()
 
         if not allowed:
@@ -245,20 +290,28 @@ class TDMServoCommandListener:
         self.register_accepted_servo_command()
 
         if action == "center":
+            command_text = "/servo center"
             self.safe_send_text("Принял команду: возвращаю сервоприводы в центр.")
 
             def callback(success, result_message):
-                self.safe_send_text(result_message)
+                if success:
+                    self.send_completion_photo(command_text, result_message)
+                else:
+                    self.safe_send_text(result_message)
 
             self.servo_controller.center_async(callback=callback)
 
         elif action == "move":
+            command_text = f"/servo {angle_1} {angle_2}"
             self.safe_send_text(
                 f"Принял команду: поворачиваю сервоприводы на {angle_1}° и {angle_2}°."
             )
 
             def callback(success, result_message):
-                self.safe_send_text(result_message)
+                if success:
+                    self.send_completion_photo(command_text, result_message)
+                else:
+                    self.safe_send_text(result_message)
 
             self.servo_controller.move_to_angles_async(
                 angle_1,
@@ -271,7 +324,6 @@ class TDMServoCommandListener:
     def run_forever(self, stop_event):
         """
         Простой тестовый вариант: опрашиваем непрочитанные сообщения.
-        Интервал специально не маленький, чтобы не спамить API.
         """
         print("[TDM SERVO] Listener started")
 
