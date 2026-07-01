@@ -21,6 +21,29 @@ from tdm_servo_commands import TDMServoCommandListener
 send_queue = queue.Queue(maxsize=5)
 stop_event = threading.Event()
 
+# Храним последний кадр с камеры, чтобы после команды на поворот
+# можно было отправить актуальное фото.
+frame_lock = threading.Lock()
+latest_frame_storage = {
+    "frame": None
+}
+
+
+def set_latest_frame(frame) -> None:
+    if frame is None:
+        return
+
+    with frame_lock:
+        latest_frame_storage["frame"] = frame.copy()
+
+
+def get_latest_frame_copy():
+    with frame_lock:
+        frame = latest_frame_storage["frame"]
+        if frame is None:
+            return None
+        return frame.copy()
+
 
 def read_cpu_temp() -> float | None:
     """
@@ -59,7 +82,6 @@ def format_hourly_report(
             f"Максимальная температура: {max_temp:.1f} °C\n"
             f"Количество замеров: {len(temp_samples)}"
         )
-
     else:
         temp_text = "Температура: нет данных"
 
@@ -80,7 +102,6 @@ def sender_worker(tdm_client: TDMClient) -> None:
     while not stop_event.is_set():
         try:
             task = send_queue.get(timeout=0.5)
-
         except queue.Empty:
             continue
 
@@ -131,12 +152,6 @@ def main() -> None:
         scan_interval_seconds=WIFI_SCAN_INTERVAL_SECONDS,
     )
 
-    servo_command_listener = TDMServoCommandListener(
-        tdm_client=tdm_client,
-        servo_controller=servo_controller,
-        poll_interval_seconds=5,
-    )
-
     sender_thread = threading.Thread(
         target=sender_worker,
         args=(tdm_client,),
@@ -153,6 +168,15 @@ def main() -> None:
 
     camera.open()
     servo_controller.open()
+
+    servo_command_listener = TDMServoCommandListener(
+        tdm_client=tdm_client,
+        servo_controller=servo_controller,
+        camera=camera,
+        enqueue_photo_func=enqueue_photo,
+        get_latest_frame_func=get_latest_frame_copy,
+        poll_interval_seconds=5,
+    )
 
     servo_command_thread = threading.Thread(
         target=servo_command_listener.run_forever,
@@ -175,7 +199,6 @@ def main() -> None:
     motion_count = 0
 
     # Движение должно подтвердиться несколько кадров подряд.
-    # Это снижает ложные и слишком частые сработки.
     motion_confirm_frames = 0
     MOTION_CONFIRM_FRAMES = 3
 
@@ -189,12 +212,13 @@ def main() -> None:
 
         while True:
             frame = camera.read_frame()
+            set_latest_frame(frame)
 
             now_time = time.time()
             now_dt = datetime.now()
             now_hour = now_dt.replace(minute=0, second=0, microsecond=0)
 
-            # 1. Собираем температуру раз в 30 секунд.
+            # 1. Собираем температуру раз в 30 секунд
             if now_time - last_temp_sample_time >= temp_sample_interval:
                 cpu_temp = read_cpu_temp()
 
@@ -204,7 +228,7 @@ def main() -> None:
 
                 last_temp_sample_time = now_time
 
-            # 2. Если начался новый час — отправляем отчет с фото.
+            # 2. Если начался новый час — отправляем отчет с фото
             if now_hour > current_report_hour:
                 print("[REPORT] New hour. Sending hourly report with snapshot...")
 
@@ -226,7 +250,7 @@ def main() -> None:
                 temp_samples = []
                 motion_count = 0
 
-            # 3. Обычная логика движения камеры.
+            # 3. Обычная логика движения камеры
             motion_detected = camera.detect_motion(frame)
 
             if motion_detected:
@@ -241,11 +265,6 @@ def main() -> None:
                     print("[MOTION] Confirmed motion detected")
 
                     try:
-                        # ВАЖНО:
-                        # Сервоприводы НЕ двигаются автоматически от камеры.
-                        # Управление сервоприводами сейчас только из TDM:
-                        # /servo 90 120
-
                         photo_path = camera.save_motion_photo(frame.copy())
 
                         enqueue_photo(
@@ -258,8 +277,6 @@ def main() -> None:
                     except Exception as error:
                         print("[MOTION ERROR]", error)
 
-                # Сбрасываем подтверждение, чтобы одно длинное движение
-                # не считалось новой сработкой каждый кадр.
                 motion_confirm_frames = 0
 
             time.sleep(0.03)
