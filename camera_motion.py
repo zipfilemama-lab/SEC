@@ -1,98 +1,297 @@
 import glob
 import os
+import re
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import cv2
-
-from PIL import Image, ImageDraw, ImageFont
 
 from config import (
     PHOTO_DIR,
     MAX_PHOTOS,
-    CAMERA_INDEX,
-    CAMERA_WIDTH,
-    CAMERA_HEIGHT,
-    CAMERA_FPS,
     JPEG_QUALITY,
-    MOTION_AREA_THRESHOLD,
-    MOTION_RESIZE_SCALE,
 )
 
 
 class CameraMotionDetector:
     """
-    Отвечает за камеру, поиск движения и сохранение фотографий.
+    Универсальный класс камеры.
+
+    Поддерживает два режима:
+
+    backend="picamera2"
+        Камера Raspberry Pi в CSI-разъёме.
+
+    backend="v4l2"
+        Обычная USB-камера через /dev/video...
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        name: str,
+        backend: str,
+        device: str | int | None,
+        width: int,
+        height: int,
+        fps: int,
+        motion_area_threshold: int,
+        motion_resize_scale: float,
+    ):
+        self.name = name
+        self.backend = backend
+        self.device = device
+
+        self.width = width
+        self.height = height
+        self.fps = fps
+
+        self.motion_area_threshold = motion_area_threshold
+        self.motion_resize_scale = motion_resize_scale
+
         self.cap = None
+        self.picam2 = None
+
         self.previous_gray = None
-        self.last_motion_boxes = []
+        self.last_motion_boxes: list[tuple[int, int, int, int]] = []
+
+        self.safe_name = self._make_safe_name(name)
+
+    @staticmethod
+    def _make_safe_name(value: str) -> str:
+        value = value.strip().lower()
+        value = re.sub(r"[^a-z0-9_-]+", "_", value)
+        return value.strip("_") or "camera"
 
     def open(self) -> None:
-        print("[CAMERA] Opening camera...")
+        print(
+            f"[CAMERA {self.name}] Opening "
+            f"backend={self.backend}, device={self.device}"
+        )
 
-        self.cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+        if self.backend == "picamera2":
+            self._open_picamera2()
+
+        elif self.backend == "v4l2":
+            self._open_v4l2()
+
+        else:
+            raise ValueError(
+                f"Неизвестный тип камеры: {self.backend}"
+            )
+
+        first_frame = self.read_frame()
+        self.previous_gray = self.prepare_motion_frame(first_frame)
+
+        print(
+            f"[CAMERA {self.name}] Ready: "
+            f"{first_frame.shape[1]}x{first_frame.shape[0]}"
+        )
+
+    def _open_picamera2(self) -> None:
+        try:
+            from picamera2 import Picamera2
+        except ImportError as error:
+            raise RuntimeError(
+                "Не установлена библиотека Picamera2. "
+                "Выполни: sudo apt install python3-picamera2"
+            ) from error
+
+        self.picam2 = Picamera2()
+
+        configuration = self.picam2.create_video_configuration(
+            main={
+                "size": (self.width, self.height),
+                "format": "RGB888",
+            },
+            controls={
+                "FrameRate": float(self.fps),
+            },
+            buffer_count=4,
+        )
+
+        self.picam2.configure(configuration)
+        self.picam2.start()
+
+        # Камере требуется немного времени для запуска
+        # автоэкспозиции и автофокуса.
+        time.sleep(2)
+
+    def _open_v4l2(self) -> None:
+        source: Any = self.device
+
+        if isinstance(source, str) and source.isdigit():
+            source = int(source)
+
+        self.cap = cv2.VideoCapture(
+            source,
+            cv2.CAP_V4L2,
+        )
+
+        self.cap.set(
+            cv2.CAP_PROP_BUFFERSIZE,
+            1,
+        )
+
+        self.cap.set(
+            cv2.CAP_PROP_FRAME_WIDTH,
+            self.width,
+        )
+
+        self.cap.set(
+            cv2.CAP_PROP_FRAME_HEIGHT,
+            self.height,
+        )
+
+        self.cap.set(
+            cv2.CAP_PROP_FPS,
+            self.fps,
+        )
+
+        # Для многих USB-камер MJPG позволяет получить
+        # 1280x720 без слишком большой нагрузки на USB.
+        self.cap.set(
+            cv2.CAP_PROP_FOURCC,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+        )
 
         if not self.cap.isOpened():
-            raise RuntimeError("Камера не открылась")
+            raise RuntimeError(
+                f"USB-камера не открылась: {self.device}"
+            )
 
-        ok, frame = self.cap.read()
-        if not ok:
-            raise RuntimeError("Не удалось получить первый кадр с камеры")
+        # Несколько первых кадров могут быть пустыми.
+        for _ in range(10):
+            ok, frame = self.cap.read()
 
-        self.previous_gray = self.prepare_motion_frame(frame)
-        print("[CAMERA] Camera ready")
+            if ok and frame is not None:
+                return
+
+            time.sleep(0.1)
+
+        raise RuntimeError(
+            f"USB-камера {self.device} не отдаёт кадры"
+        )
 
     def close(self) -> None:
         if self.cap is not None:
             self.cap.release()
-            print("[CAMERA] Camera released")
+            self.cap = None
+
+        if self.picam2 is not None:
+            try:
+                self.picam2.stop()
+            finally:
+                self.picam2.close()
+                self.picam2 = None
+
+        print(f"[CAMERA {self.name}] Released")
 
     def read_frame(self):
-        if self.cap is None:
-            raise RuntimeError("Камера не открыта. Сначала вызови open().")
+        if self.backend == "picamera2":
+            if self.picam2 is None:
+                raise RuntimeError(
+                    f"Камера {self.name} не открыта"
+                )
 
-        ok, frame = self.cap.read()
-        if not ok:
-            raise RuntimeError("Камера перестала отдавать кадры")
+            frame = self.picam2.capture_array("main")
 
-        return frame
+            if frame is None:
+                raise RuntimeError(
+                    f"Камера {self.name} вернула пустой кадр"
+                )
+
+            # Picamera2 с RGB888 возвращает RGB.
+            # OpenCV работает с BGR.
+            if len(frame.shape) == 3 and frame.shape[2] == 4:
+                frame = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_RGBA2BGR,
+                )
+
+            elif len(frame.shape) == 3 and frame.shape[2] == 3:
+                frame = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_RGB2BGR,
+                )
+
+            return frame
+
+        if self.backend == "v4l2":
+            if self.cap is None:
+                raise RuntimeError(
+                    f"Камера {self.name} не открыта"
+                )
+
+            ok, frame = self.cap.read()
+
+            if not ok or frame is None:
+                raise RuntimeError(
+                    f"Камера {self.name} перестала отдавать кадры"
+                )
+
+            return frame
+
+        raise RuntimeError(
+            f"Неизвестный backend камеры: {self.backend}"
+        )
 
     def prepare_motion_frame(self, frame):
         """
-        Готовим кадр для поиска движения:
-        - уменьшаем картинку;
-        - переводим в серый цвет;
-        - размываем шум.
+        Подготавливает кадр для поиска движения:
+
+        1. Уменьшает изображение.
+        2. Переводит его в серый цвет.
+        3. Размывает мелкий цифровой шум.
         """
-        if MOTION_RESIZE_SCALE != 1.0:
-            frame = cv2.resize(
-                frame,
+        prepared = frame
+
+        if self.motion_resize_scale != 1.0:
+            prepared = cv2.resize(
+                prepared,
                 None,
-                fx=MOTION_RESIZE_SCALE,
-                fy=MOTION_RESIZE_SCALE,
+                fx=self.motion_resize_scale,
+                fy=self.motion_resize_scale,
             )
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        gray = cv2.cvtColor(
+            prepared,
+            cv2.COLOR_BGR2GRAY,
+        )
+
+        gray = cv2.GaussianBlur(
+            gray,
+            (5, 5),
+            0,
+        )
+
         return gray
 
     def detect_motion(self, frame) -> bool:
-        """
-        Возвращает True, если движение найдено.
-        Также сохраняет координаты рамок в self.last_motion_boxes.
-        """
         current_gray = self.prepare_motion_frame(frame)
 
-        diff = cv2.absdiff(self.previous_gray, current_gray)
-        _, threshold = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-        dilated = cv2.dilate(threshold, None, iterations=2)
+        if self.previous_gray is None:
+            self.previous_gray = current_gray
+            return False
+
+        difference = cv2.absdiff(
+            self.previous_gray,
+            current_gray,
+        )
+
+        _, threshold = cv2.threshold(
+            difference,
+            25,
+            255,
+            cv2.THRESH_BINARY,
+        )
+
+        dilated = cv2.dilate(
+            threshold,
+            None,
+            iterations=2,
+        )
 
         contours, _ = cv2.findContours(
             dilated,
@@ -107,37 +306,40 @@ class CameraMotionDetector:
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < MOTION_AREA_THRESHOLD:
+
+            if area < self.motion_area_threshold:
                 continue
 
-            x, y, w, h = cv2.boundingRect(contour)
+            x, y, width, height = cv2.boundingRect(contour)
 
-            if MOTION_RESIZE_SCALE != 1.0:
-                scale = 1.0 / MOTION_RESIZE_SCALE
+            if self.motion_resize_scale != 1.0:
+                scale = 1.0 / self.motion_resize_scale
+
                 x = int(x * scale)
                 y = int(y * scale)
-                w = int(w * scale)
-                h = int(h * scale)
+                width = int(width * scale)
+                height = int(height * scale)
 
-            self.last_motion_boxes.append((x, y, w, h))
+            self.last_motion_boxes.append(
+                (x, y, width, height)
+            )
+
             motion_detected = True
 
         return motion_detected
 
     def draw_motion_boxes(self, frame):
-        """
-        Рисует рамки на местах движения.
-        """
         annotated = frame.copy()
 
-        for x, y, w, h in self.last_motion_boxes:
+        for x, y, width, height in self.last_motion_boxes:
             cv2.rectangle(
                 annotated,
                 (x, y),
-                (x + w, y + h),
+                (x + width, y + height),
                 (0, 255, 0),
                 3,
             )
+
             cv2.putText(
                 annotated,
                 "MOTION",
@@ -149,218 +351,127 @@ class CameraMotionDetector:
                 cv2.LINE_AA,
             )
 
-        timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(
+        self._draw_camera_label(
             annotated,
-            timestamp_text,
-            (20, annotated.shape[0] - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
+            event_text="MOTION",
         )
 
         return annotated
 
-    def get_font(self, size=32):
-        """
-        Ищем шрифт, который умеет кириллицу.
-        На Kali/Raspberry чаще всего есть DejaVuSans.
-        """
-        font_paths = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        ]
-
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                return ImageFont.truetype(font_path, size)
-
-        print("[FONT WARNING] Не найден TTF-шрифт. Кириллица может не отображаться.")
-        return ImageFont.load_default()
-
-    def draw_russian_text_block(self, frame, lines):
-        """
-        Рисует русский текст на кадре через Pillow.
-        OpenCV cv2.putText кириллицу обычно превращает в ?????.
-        """
-        # OpenCV хранит кадр как BGR, Pillow работает с RGB.
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb_frame)
-
-        draw = ImageDraw.Draw(image)
-
-        title_font = self.get_font(34)
-        text_font = self.get_font(26)
-
-        x = 20
-        y = 20
-        padding = 14
-        line_gap = 10
-
-        # Считаем размер фона под текст.
-        text_boxes = []
-
-        for index, line in enumerate(lines):
-            font = title_font if index == 0 else text_font
-            bbox = draw.textbbox((0, 0), line, font=font)
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            text_boxes.append((width, height, font))
-
-        block_width = max(width for width, height, font in text_boxes) + padding * 2
-        block_height = (
-            sum(height for width, height, font in text_boxes)
-            + line_gap * (len(lines) - 1)
-            + padding * 2
+    def _draw_camera_label(
+        self,
+        frame,
+        event_text: str,
+    ) -> None:
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
         )
 
-        # Полупрозрачный тёмный фон.
-        overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-
-        overlay_draw.rectangle(
-            (x, y, x + block_width, y + block_height),
-            fill=(0, 0, 0, 150),
-        )
-
-        image = Image.alpha_composite(image.convert("RGBA"), overlay)
-
-        draw = ImageDraw.Draw(image)
-
-        current_y = y + padding
-
-        for index, line in enumerate(lines):
-            font = title_font if index == 0 else text_font
-
-            # Белый текст.
-            draw.text(
-                (x + padding, current_y),
-                line,
-                font=font,
-                fill=(255, 255, 255, 255),
-            )
-
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_height = bbox[3] - bbox[1]
-            current_y += line_height + line_gap
-
-        # Возвращаем обратно в формат OpenCV BGR.
-        final_rgb = image.convert("RGB")
-        final_frame = cv2.cvtColor(
-            src=cv2.UMat(cv2.cvtColor(
-                cv2.cvtColor(
-                    __import__("numpy").array(final_rgb),
-                    cv2.COLOR_RGB2BGR
-                ),
-                cv2.COLOR_BGR2RGB
-            )).get(),
-            code=cv2.COLOR_RGB2BGR,
-        )
-
-        # Более простой и надежный возврат через numpy:
-        import numpy as np
-        return cv2.cvtColor(np.array(final_rgb), cv2.COLOR_RGB2BGR)
-
-    def save_motion_photo(self, frame) -> Path:
-        """
-        Сохраняет фото при движении.
-        """
-        PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-
-        annotated_frame = self.draw_motion_boxes(frame)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        photo_path = PHOTO_DIR / f"motion_{timestamp}.jpg"
-
-        ok = cv2.imwrite(
-            str(photo_path),
-            annotated_frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
-        )
-
-        if not ok:
-            raise RuntimeError("Не удалось сохранить фото движения через cv2.imwrite")
-
-        print(f"[PHOTO] Saved motion photo: {photo_path}")
-        self.cleanup_old_photos()
-        return photo_path
-
-    def save_snapshot_photo(self, frame) -> Path:
-        """
-        Сохраняет обычный контрольный снимок для ежечасного отчета.
-        Это фото делается даже если движения не было.
-        """
-        PHOTO_DIR.mkdir(parents=True, exist_ok=True)
-
-        snapshot = frame.copy()
-        timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        top_text = f"{self.name} | {event_text}"
 
         cv2.putText(
-            snapshot,
-            f"SNAPSHOT {timestamp_text}",
-            (20, snapshot.shape[0] - 20),
+            frame,
+            top_text,
+            (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.85,
             (255, 255, 255),
             2,
             cv2.LINE_AA,
         )
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        photo_path = PHOTO_DIR / f"snapshot_{timestamp}.jpg"
-
-        ok = cv2.imwrite(
-            str(photo_path),
-            snapshot,
-            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+        cv2.putText(
+            frame,
+            timestamp,
+            (20, frame.shape[0] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
         )
 
-        if not ok:
-            raise RuntimeError("Не удалось сохранить контрольный снимок через cv2.imwrite")
+    def save_motion_photo(self, frame) -> Path:
+        PHOTO_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        print(f"[SNAPSHOT] Saved hourly snapshot: {photo_path}")
-        self.cleanup_old_photos()
-        return photo_path
+        annotated = self.draw_motion_boxes(frame)
 
-    def save_servo_command_photo(self, frame, command_text: str, result_text: str) -> Path:
-        """
-        Сохраняет фото после выполнения servo-команды.
-        Тут используем Pillow, чтобы нормально отображалась кириллица.
-        """
-        if frame is None:
-            raise RuntimeError("Нет кадра для фото после servo-команды")
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d_%H-%M-%S_%f"
+        )
 
-        PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+        photo_path = (
+            PHOTO_DIR
+            / f"{self.safe_name}_motion_{timestamp}.jpg"
+        )
 
-        timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        lines = [
-            "Команда выполнена",
-            f"Команда: {command_text}",
-            f"Результат: {result_text}",
-            timestamp_text,
-        ]
-
-        annotated = self.draw_russian_text_block(frame.copy(), lines)
-
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        photo_path = PHOTO_DIR / f"servo_{timestamp}.jpg"
-
-        ok = cv2.imwrite(
-            str(photo_path),
+        self._write_jpeg(
+            photo_path,
             annotated,
-            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
+        )
+
+        print(
+            f"[PHOTO {self.name}] Saved: {photo_path}"
+        )
+
+        self.cleanup_old_photos()
+        return photo_path
+
+    def save_snapshot_photo(self, frame) -> Path:
+        PHOTO_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        snapshot = frame.copy()
+
+        self._draw_camera_label(
+            snapshot,
+            event_text="SNAPSHOT",
+        )
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d_%H-%M-%S_%f"
+        )
+
+        photo_path = (
+            PHOTO_DIR
+            / f"{self.safe_name}_snapshot_{timestamp}.jpg"
+        )
+
+        self._write_jpeg(
+            photo_path,
+            snapshot,
+        )
+
+        print(
+            f"[SNAPSHOT {self.name}] Saved: {photo_path}"
+        )
+
+        self.cleanup_old_photos()
+        return photo_path
+
+    @staticmethod
+    def _write_jpeg(
+        photo_path: Path,
+        frame,
+    ) -> None:
+        ok = cv2.imwrite(
+            str(photo_path),
+            frame,
+            [
+                int(cv2.IMWRITE_JPEG_QUALITY),
+                JPEG_QUALITY,
+            ],
         )
 
         if not ok:
-            raise RuntimeError("Не удалось сохранить фото после servo-команды")
-
-        print(f"[SERVO PHOTO] Saved servo command photo: {photo_path}")
-        self.cleanup_old_photos()
-        return photo_path
+            raise RuntimeError(
+                f"Не удалось сохранить фотографию: {photo_path}"
+            )
 
     def cleanup_old_photos(self) -> None:
         files = sorted(
@@ -371,11 +482,18 @@ class CameraMotionDetector:
         if len(files) <= MAX_PHOTOS:
             return
 
-        files_to_delete = files[: len(files) - MAX_PHOTOS]
+        files_to_delete = files[
+            : len(files) - MAX_PHOTOS
+        ]
 
         for file_path in files_to_delete:
             try:
                 os.remove(file_path)
-                print(f"[CLEANUP] Deleted old photo: {file_path}")
+                print(
+                    f"[CLEANUP] Deleted: {file_path}"
+                )
             except Exception as error:
-                print(f"[CLEANUP ERROR] {file_path}: {error}")
+                print(
+                    f"[CLEANUP ERROR] {file_path}: {error}"
+                )
+PY
