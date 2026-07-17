@@ -202,20 +202,12 @@ class CameraMotionDetector:
                     f"Камера {self.name} вернула пустой кадр"
                 )
 
-            # Picamera2 с RGB888 возвращает RGB.
-            # OpenCV работает с BGR.
             if len(frame.shape) == 3 and frame.shape[2] == 4:
                 frame = cv2.cvtColor(
                     frame,
-                    cv2.COLOR_RGBA2BGR,
+                    cv2.COLOR_BGRA2BGR,
                 )
-
-            elif len(frame.shape) == 3 and frame.shape[2] == 3:
-                frame = cv2.cvtColor(
-                    frame,
-                    cv2.COLOR_RGB2BGR,
-                )
-
+            
             return frame
 
         if self.backend == "v4l2":
