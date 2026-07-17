@@ -344,4 +344,3 @@ def validate_config() -> None:
         raise RuntimeError(
             "SERVO_MIN_ANGLE должен быть меньше SERVO_MAX_ANGLE"
         )
-PY
