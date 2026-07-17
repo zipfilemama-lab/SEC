@@ -496,4 +496,3 @@ class CameraMotionDetector:
                 print(
                     f"[CLEANUP ERROR] {file_path}: {error}"
                 )
-PY
