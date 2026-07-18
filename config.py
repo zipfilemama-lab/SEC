@@ -10,8 +10,8 @@ def load_env_file(env_path: Path = BASE_DIR / ".env") -> None:
     Загружает переменные из файла .env.
 
     Поддерживаемый формат:
-        VARIABLE=value
-        VARIABLE="value"
+    VARIABLE=value
+    VARIABLE="value"
     """
     if not env_path.exists():
         return
@@ -72,7 +72,9 @@ def get_env_bool(name: str, default: bool = False) -> bool:
 # ============================================================
 
 TDM_TOKEN = os.getenv("TDM_TOKEN")
+
 WORKSPACE_ID = get_env_int("WORKSPACE_ID", -1)
+
 GROUP_ID = get_env_int("GROUP_ID", 0)
 
 TDM_API_BASE = os.getenv(
@@ -91,7 +93,9 @@ TDM_FILEUPLOAD_BASE = os.getenv(
 # ============================================================
 
 DATA_DIR = BASE_DIR / "data"
+
 PHOTO_DIR = DATA_DIR / "motion_events"
+
 LOG_DIR = DATA_DIR / "logs"
 
 
@@ -100,6 +104,7 @@ LOG_DIR = DATA_DIR / "logs"
 # ============================================================
 
 JPEG_QUALITY = get_env_int("JPEG_QUALITY", 80)
+
 MAX_PHOTOS = get_env_int("MAX_PHOTOS", 100)
 
 SEND_COOLDOWN_SECONDS = get_env_int(
@@ -147,6 +152,57 @@ RPI_MOTION_RESIZE_SCALE = get_env_float(
     0.5,
 )
 
+# Параметры изображения Raspberry Pi Camera.
+#
+# Brightness:
+#   от -1.0 до 1.0
+#   0.0 — значение по умолчанию
+#
+# Contrast:
+#   0.0 и выше
+#   1.0 — значение по умолчанию
+#
+# Sharpness:
+#   0.0 и выше
+#   1.0 — значение по умолчанию
+#
+# Exposure time:
+#   задаётся в микросекундах
+#   0 — автоматическая выдержка
+#   10000 = 1/100 секунды
+#   20000 = 1/50 секунды
+#   33333 ≈ 1/30 секунды
+#
+# Digital zoom:
+#   1.0 — без зума
+#   2.0 — двукратный цифровой зум
+#   3.0 — трёхкратный цифровой зум
+
+RPI_CAMERA_BRIGHTNESS = get_env_float(
+    "RPI_CAMERA_BRIGHTNESS",
+    0.0,
+)
+
+RPI_CAMERA_CONTRAST = get_env_float(
+    "RPI_CAMERA_CONTRAST",
+    1.0,
+)
+
+RPI_CAMERA_SHARPNESS = get_env_float(
+    "RPI_CAMERA_SHARPNESS",
+    1.0,
+)
+
+RPI_CAMERA_EXPOSURE_TIME_US = get_env_int(
+    "RPI_CAMERA_EXPOSURE_TIME_US",
+    0,
+)
+
+RPI_CAMERA_DIGITAL_ZOOM = get_env_float(
+    "RPI_CAMERA_DIGITAL_ZOOM",
+    1.0,
+)
+
 
 # ============================================================
 # USB CAMERA
@@ -189,11 +245,17 @@ USB_MOTION_RESIZE_SCALE = get_env_float(
 
 
 # Старые названия оставлены для совместимости
+
 CAMERA_INDEX = get_env_int("CAMERA_INDEX", 0)
+
 CAMERA_WIDTH = RPI_CAMERA_WIDTH
+
 CAMERA_HEIGHT = RPI_CAMERA_HEIGHT
+
 CAMERA_FPS = RPI_CAMERA_FPS
+
 MOTION_AREA_THRESHOLD = RPI_MOTION_AREA_THRESHOLD
+
 MOTION_RESIZE_SCALE = RPI_MOTION_RESIZE_SCALE
 
 
@@ -307,12 +369,14 @@ def validate_config() -> None:
         or TDM_TOKEN == "ВСТАВЬ_СЮДА_СВОЙ_TDM_TOKEN"
     ):
         raise RuntimeError(
-            "Не найден TDM_TOKEN. Проверь файл .env"
+            "Не найден TDM_TOKEN.\n"
+            "Проверь файл .env"
         )
 
     if GROUP_ID == 0:
         raise RuntimeError(
-            "Не найден GROUP_ID. Проверь файл .env"
+            "Не найден GROUP_ID.\n"
+            "Проверь файл .env"
         )
 
     if not RPI_CAMERA_ENABLED and not USB_CAMERA_ENABLED:
@@ -333,6 +397,31 @@ def validate_config() -> None:
     if MOTION_CONFIRM_FRAMES < 1:
         raise RuntimeError(
             "MOTION_CONFIRM_FRAMES должен быть не меньше 1"
+        )
+
+    if not -1.0 <= RPI_CAMERA_BRIGHTNESS <= 1.0:
+        raise RuntimeError(
+            "RPI_CAMERA_BRIGHTNESS должен быть от -1.0 до 1.0"
+        )
+
+    if RPI_CAMERA_CONTRAST < 0.0:
+        raise RuntimeError(
+            "RPI_CAMERA_CONTRAST не может быть меньше 0.0"
+        )
+
+    if RPI_CAMERA_SHARPNESS < 0.0:
+        raise RuntimeError(
+            "RPI_CAMERA_SHARPNESS не может быть меньше 0.0"
+        )
+
+    if RPI_CAMERA_EXPOSURE_TIME_US < 0:
+        raise RuntimeError(
+            "RPI_CAMERA_EXPOSURE_TIME_US не может быть меньше 0"
+        )
+
+    if RPI_CAMERA_DIGITAL_ZOOM < 1.0:
+        raise RuntimeError(
+            "RPI_CAMERA_DIGITAL_ZOOM должен быть не меньше 1.0"
         )
 
     if SERVO_MIN_ANGLE < 0 or SERVO_MAX_ANGLE > 180:
