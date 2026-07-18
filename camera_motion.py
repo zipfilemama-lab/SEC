@@ -12,6 +12,11 @@ from config import (
     PHOTO_DIR,
     MAX_PHOTOS,
     JPEG_QUALITY,
+    RPI_CAMERA_BRIGHTNESS,
+    RPI_CAMERA_CONTRAST,
+    RPI_CAMERA_SHARPNESS,
+    RPI_CAMERA_EXPOSURE_TIME_US,
+    RPI_CAMERA_DIGITAL_ZOOM,
 )
 
 
@@ -42,19 +47,18 @@ class CameraMotionDetector:
         self.name = name
         self.backend = backend
         self.device = device
-
         self.width = width
         self.height = height
         self.fps = fps
-
         self.motion_area_threshold = motion_area_threshold
         self.motion_resize_scale = motion_resize_scale
 
         self.cap = None
         self.picam2 = None
-
         self.previous_gray = None
-        self.last_motion_boxes: list[tuple[int, int, int, int]] = []
+        self.last_motion_boxes: list[
+            tuple[int, int, int, int]
+        ] = []
 
         self.safe_name = self._make_safe_name(name)
 
@@ -72,17 +76,17 @@ class CameraMotionDetector:
 
         if self.backend == "picamera2":
             self._open_picamera2()
-
         elif self.backend == "v4l2":
             self._open_v4l2()
-
         else:
             raise ValueError(
                 f"Неизвестный тип камеры: {self.backend}"
             )
 
         first_frame = self.read_frame()
-        self.previous_gray = self.prepare_motion_frame(first_frame)
+        self.previous_gray = self.prepare_motion_frame(
+            first_frame
+        )
 
         print(
             f"[CAMERA {self.name}] Ready: "
@@ -94,7 +98,7 @@ class CameraMotionDetector:
             from picamera2 import Picamera2
         except ImportError as error:
             raise RuntimeError(
-                "Не установлена библиотека Picamera2. "
+                "Не установлена библиотека Picamera2.\n"
                 "Выполни: sudo apt install python3-picamera2"
             ) from error
 
@@ -112,11 +116,247 @@ class CameraMotionDetector:
         )
 
         self.picam2.configure(configuration)
-        self.picam2.start()
+        self.picam2.start(show_preview=False)
 
-        # Камере требуется немного времени для запуска
-        # автоэкспозиции и автофокуса.
+        # Камере требуется время для запуска автоэкспозиции
+        # и автофокуса.
         time.sleep(2)
+
+        self._apply_picamera2_image_controls()
+
+        # После применения настроек даём камере несколько кадров,
+        # чтобы изменения успели вступить в силу.
+        time.sleep(1)
+
+        self._print_picamera2_settings()
+
+    def _apply_picamera2_image_controls(self) -> None:
+        """
+        Применяет настройки Raspberry Pi Camera из файла .env.
+
+        Настройки применяются только к CSI-камере Picamera2.
+        USB-камера этими параметрами не изменяется.
+        """
+        if self.picam2 is None:
+            raise RuntimeError(
+                f"Камера {self.name} не открыта"
+            )
+
+        available_controls = self.picam2.camera_controls
+
+        controls_to_apply: dict[str, Any] = {
+            "Brightness": float(RPI_CAMERA_BRIGHTNESS),
+            "Contrast": float(RPI_CAMERA_CONTRAST),
+            "Sharpness": float(RPI_CAMERA_SHARPNESS),
+        }
+
+        # Значение 0 означает автоматическую выдержку.
+        if RPI_CAMERA_EXPOSURE_TIME_US > 0:
+            exposure_time = int(
+                RPI_CAMERA_EXPOSURE_TIME_US
+            )
+
+            # На старых версиях libcamera/Picamera2
+            # ручная выдержка включается через AeEnable=False.
+            if "AeEnable" in available_controls:
+                controls_to_apply["AeEnable"] = False
+
+            # На некоторых новых версиях libcamera доступны
+            # отдельные режимы ручной выдержки и усиления.
+            if "ExposureTimeMode" in available_controls:
+                controls_to_apply["ExposureTimeMode"] = 1
+
+            controls_to_apply["ExposureTime"] = exposure_time
+
+        self._validate_picamera2_controls(
+            controls_to_apply
+        )
+
+        self.picam2.set_controls(controls_to_apply)
+
+        if RPI_CAMERA_DIGITAL_ZOOM > 1.0:
+            self._apply_digital_zoom(
+                float(RPI_CAMERA_DIGITAL_ZOOM)
+            )
+
+    def _validate_picamera2_controls(
+        self,
+        requested_controls: dict[str, Any],
+    ) -> None:
+        """
+        Проверяет, что используемая камера и текущая версия
+        Picamera2 поддерживают запрошенные параметры.
+        """
+        if self.picam2 is None:
+            return
+
+        available_controls = self.picam2.camera_controls
+
+        unsupported = [
+            name
+            for name in requested_controls
+            if name not in available_controls
+        ]
+
+        if unsupported:
+            raise RuntimeError(
+                "Камера или текущая версия Picamera2 "
+                "не поддерживает параметры: "
+                + ", ".join(unsupported)
+            )
+
+        for name, value in requested_controls.items():
+            limits = available_controls.get(name)
+
+            if not limits or len(limits) < 2:
+                continue
+
+            minimum = limits[0]
+            maximum = limits[1]
+
+            # Сложные параметры вроде ScalerCrop здесь
+            # не проверяются.
+            if not isinstance(value, (int, float)):
+                continue
+
+            if not isinstance(minimum, (int, float)):
+                continue
+
+            if not isinstance(maximum, (int, float)):
+                continue
+
+            if value < minimum or value > maximum:
+                raise RuntimeError(
+                    f"{name}={value} выходит за диапазон "
+                    f"камеры: {minimum}..{maximum}"
+                )
+
+    def _apply_digital_zoom(
+        self,
+        zoom_factor: float,
+    ) -> None:
+        """
+        Выполняет цифровой зум через ScalerCrop.
+
+        Зум центрирован относительно середины изображения.
+        При zoom_factor=1.0 кадр не обрезается.
+        """
+        if self.picam2 is None:
+            return
+
+        if "ScalerCrop" not in self.picam2.camera_controls:
+            raise RuntimeError(
+                "Эта камера не поддерживает ScalerCrop"
+            )
+
+        metadata = self.picam2.capture_metadata()
+        current_crop = metadata.get("ScalerCrop")
+
+        if (
+            current_crop is None
+            or len(current_crop) != 4
+        ):
+            raise RuntimeError(
+                "Не удалось получить исходную область "
+                "ScalerCrop для цифрового зума"
+            )
+
+        crop_x, crop_y, crop_width, crop_height = (
+            int(current_crop[0]),
+            int(current_crop[1]),
+            int(current_crop[2]),
+            int(current_crop[3]),
+        )
+
+        new_width = max(
+            2,
+            int(crop_width / zoom_factor),
+        )
+        new_height = max(
+            2,
+            int(crop_height / zoom_factor),
+        )
+
+        # Для совместимости с сенсорами, где размеры должны
+        # быть чётными.
+        new_width -= new_width % 2
+        new_height -= new_height % 2
+
+        new_x = crop_x + (crop_width - new_width) // 2
+        new_y = crop_y + (crop_height - new_height) // 2
+
+        new_x -= new_x % 2
+        new_y -= new_y % 2
+
+        crop = (
+            new_x,
+            new_y,
+            new_width,
+            new_height,
+        )
+
+        self.picam2.set_controls(
+            {
+                "ScalerCrop": crop,
+            }
+        )
+
+        print(
+            f"[CAMERA {self.name}] Digital zoom: "
+            f"{zoom_factor:.2f}x, crop={crop}"
+        )
+
+    def _print_picamera2_settings(self) -> None:
+        """
+        Выводит запрошенные настройки и часть фактических
+        метаданных камеры после запуска.
+        """
+        if self.picam2 is None:
+            return
+
+        metadata = self.picam2.capture_metadata()
+
+        print(
+            f"[CAMERA {self.name}] Image settings:"
+        )
+        print(
+            f"  Brightness: "
+            f"{RPI_CAMERA_BRIGHTNESS}"
+        )
+        print(
+            f"  Contrast: "
+            f"{RPI_CAMERA_CONTRAST}"
+        )
+        print(
+            f"  Sharpness: "
+            f"{RPI_CAMERA_SHARPNESS}"
+        )
+
+        if RPI_CAMERA_EXPOSURE_TIME_US > 0:
+            print(
+                "  Exposure mode: manual"
+            )
+            print(
+                "  Requested exposure: "
+                f"{RPI_CAMERA_EXPOSURE_TIME_US} us"
+            )
+        else:
+            print(
+                "  Exposure mode: automatic"
+            )
+
+        print(
+            "  Actual exposure: "
+            f"{metadata.get('ExposureTime', 'unknown')} us"
+        )
+        print(
+            "  Digital zoom: "
+            f"{RPI_CAMERA_DIGITAL_ZOOM}x"
+        )
+        print(
+            "  ScalerCrop: "
+            f"{metadata.get('ScalerCrop', 'unknown')}"
+        )
 
     def _open_v4l2(self) -> None:
         source: Any = self.device
@@ -184,7 +424,8 @@ class CameraMotionDetector:
                 self.picam2.stop()
             finally:
                 self.picam2.close()
-                self.picam2 = None
+
+            self.picam2 = None
 
         print(f"[CAMERA {self.name}] Released")
 
@@ -202,12 +443,15 @@ class CameraMotionDetector:
                     f"Камера {self.name} вернула пустой кадр"
                 )
 
-            if len(frame.shape) == 3 and frame.shape[2] == 4:
+            if (
+                len(frame.shape) == 3
+                and frame.shape[2] == 4
+            ):
                 frame = cv2.cvtColor(
                     frame,
                     cv2.COLOR_BGRA2BGR,
                 )
-            
+
             return frame
 
         if self.backend == "v4l2":
@@ -220,7 +464,8 @@ class CameraMotionDetector:
 
             if not ok or frame is None:
                 raise RuntimeError(
-                    f"Камера {self.name} перестала отдавать кадры"
+                    f"Камера {self.name} "
+                    "перестала отдавать кадры"
                 )
 
             return frame
@@ -302,7 +547,9 @@ class CameraMotionDetector:
             if area < self.motion_area_threshold:
                 continue
 
-            x, y, width, height = cv2.boundingRect(contour)
+            x, y, width, height = cv2.boundingRect(
+                contour
+            )
 
             if self.motion_resize_scale != 1.0:
                 scale = 1.0 / self.motion_resize_scale
@@ -410,6 +657,7 @@ class CameraMotionDetector:
         )
 
         self.cleanup_old_photos()
+
         return photo_path
 
     def save_snapshot_photo(self, frame) -> Path:
@@ -444,6 +692,7 @@ class CameraMotionDetector:
         )
 
         self.cleanup_old_photos()
+
         return photo_path
 
     @staticmethod
@@ -462,7 +711,8 @@ class CameraMotionDetector:
 
         if not ok:
             raise RuntimeError(
-                f"Не удалось сохранить фотографию: {photo_path}"
+                f"Не удалось сохранить фотографию: "
+                f"{photo_path}"
             )
 
     def cleanup_old_photos(self) -> None:
@@ -481,10 +731,12 @@ class CameraMotionDetector:
         for file_path in files_to_delete:
             try:
                 os.remove(file_path)
+
                 print(
                     f"[CLEANUP] Deleted: {file_path}"
                 )
             except Exception as error:
                 print(
-                    f"[CLEANUP ERROR] {file_path}: {error}"
+                    f"[CLEANUP ERROR] "
+                    f"{file_path}: {error}"
                 )
