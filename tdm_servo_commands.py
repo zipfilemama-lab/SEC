@@ -13,52 +13,50 @@ class TDMServoCommandListener:
     """
     Читает команды из TDM и управляет сервоприводами.
 
-    Команды:
-    /servo 90 120
-    servo 90 120
-    серво 90 120
+    Поддерживаемые команды:
 
-    /servo center
-    /servo off
-    /servo help
+        /servo help
+        /servo 90 90
+        /servo center
+        /servo off
 
-    Защита:
-    - не принимает команду, если серво уже двигаются;
-    - ограничивает частоту команд;
-    - ограничивает число команд в минуту.
+        servo 90 90
+        серво 90 90
+        /серво 90 90
 
-    Новая логика:
-    после успешного выполнения команды делаем фото с камеры
-    и отправляем его в TDM с подписью "Команда выполнена".
+    Команда help работает даже тогда, когда PCA9685 не подключена.
     """
 
     def __init__(
         self,
         tdm_client,
         servo_controller,
-        camera,
-        enqueue_photo_func,
-        get_latest_frame_func,
         poll_interval_seconds=5,
     ):
         self.tdm_client = tdm_client
         self.servo_controller = servo_controller
-        self.camera = camera
-        self.enqueue_photo_func = enqueue_photo_func
-        self.get_latest_frame_func = get_latest_frame_func
         self.poll_interval_seconds = poll_interval_seconds
 
         self.last_processed_message_id = 0
         self.last_servo_command_time = 0.0
         self.command_timestamps = deque()
 
-    def normalize_text(self, text):
+    @staticmethod
+    def normalize_text(text):
         if text is None:
             return ""
 
         return str(text).strip().lower()
 
-    def find_command_index(self, parts):
+    @staticmethod
+    def message_id(message):
+        try:
+            return int(message.get("id", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def find_command_index(parts):
         allowed_commands = {
             "/servo",
             "servo",
@@ -67,26 +65,31 @@ class TDMServoCommandListener:
         }
 
         for index, part in enumerate(parts):
-            if part in allowed_commands:
+            # В групповом чате команда может выглядеть:
+            # /servo@имя_бота help
+            clean_part = part.split("@", 1)[0]
+
+            if clean_part in allowed_commands:
                 return index
 
         return None
 
     def parse_servo_command(self, text):
         """
-        Возвращает:
-        ("move", angle1, angle2)
-        ("center", None, None)
-        ("off", None, None)
-        ("help", None, None)
-        None
+        Возвращает один из вариантов:
+
+            ("move", angle_1, angle_2)
+            ("center", None, None)
+            ("off", None, None)
+            ("help", None, None)
+            None
         """
+
         text = self.normalize_text(text)
 
         if not text:
             return None
 
-        text = text.replace("@", " ")
         parts = text.split()
 
         if not parts:
@@ -99,65 +102,92 @@ class TDMServoCommandListener:
 
         parts = parts[command_index:]
 
+        # Убираем имя бота из команды:
+        # /servo@security_bot help -> /servo help
+        parts[0] = parts[0].split("@", 1)[0]
+
         if len(parts) == 1:
-            return ("help", None, None)
+            return "help", None, None
 
         action = parts[1]
 
         if action in {"help", "помощь", "?"}:
-            return ("help", None, None)
+            return "help", None, None
 
         if action in {"center", "centre", "центр"}:
-            return ("center", None, None)
+            return "center", None, None
 
-        if action in {"off", "disable", "stop", "выкл", "отключить"}:
-            return ("off", None, None)
+        if action in {
+            "off",
+            "disable",
+            "stop",
+            "выкл",
+            "выключить",
+            "отключить",
+        }:
+            return "off", None, None
 
         if len(parts) < 3:
-            return ("help", None, None)
+            return "help", None, None
 
         try:
             angle_1 = int(parts[1])
             angle_2 = int(parts[2])
         except ValueError:
-            return ("help", None, None)
+            return "help", None, None
 
-        if (
-            angle_1 < SERVO_MIN_ANGLE
-            or angle_1 > SERVO_MAX_ANGLE
-            or angle_2 < SERVO_MIN_ANGLE
-            or angle_2 > SERVO_MAX_ANGLE
-        ):
+        if not SERVO_MIN_ANGLE <= angle_1 <= SERVO_MAX_ANGLE:
             raise ValueError(
-                f"Углы должны быть от {SERVO_MIN_ANGLE} до {SERVO_MAX_ANGLE} градусов"
+                f"Угол первого сервопривода должен быть "
+                f"от {SERVO_MIN_ANGLE} до {SERVO_MAX_ANGLE} градусов"
             )
 
-        return ("move", angle_1, angle_2)
+        if not SERVO_MIN_ANGLE <= angle_2 <= SERVO_MAX_ANGLE:
+            raise ValueError(
+                f"Угол второго сервопривода должен быть "
+                f"от {SERVO_MIN_ANGLE} до {SERVO_MAX_ANGLE} градусов"
+            )
+
+        return "move", angle_1, angle_2
 
     def help_text(self):
+        controller_open = getattr(self.servo_controller, "bus", None) is not None
+        controller_enabled = getattr(self.servo_controller, "enabled", False)
+
+        if not controller_enabled:
+            hardware_status = "отключены настройкой SERVO_ENABLED"
+        elif controller_open:
+            hardware_status = "PCA9685 подключена и инициализирована"
+        else:
+            hardware_status = (
+                "PCA9685 сейчас не инициализирована; "
+                "команда help работает, но движение недоступно"
+            )
+
         return (
             "Команды сервоприводов:\n\n"
-            "/servo 90 90 — повернуть оба сервопривода\n"
+            "/servo help — показать эту справку\n"
+            "/servo 90 90 — установить углы двух сервоприводов\n"
             "/servo 70 110 — первый на 70°, второй на 110°\n"
-            "/servo center — вернуть оба в центр\n"
+            "/servo center — вернуть оба сервопривода в центр\n"
             "/servo off — отключить PWM-сигнал\n\n"
-            "После успешной команды бот отправляет фото с камеры.\n\n"
-            "Ограничения безопасности:\n"
-            f"углы: {SERVO_MIN_ANGLE}–{SERVO_MAX_ANGLE}°\n"
-            f"не чаще 1 команды в {SERVO_COMMAND_COOLDOWN_SECONDS} сек.\n"
-            f"максимум {SERVO_MAX_COMMANDS_PER_MINUTE} команд в минуту."
+            f"Допустимые углы: {SERVO_MIN_ANGLE}–{SERVO_MAX_ANGLE}°\n"
+            f"Пауза между движениями: "
+            f"{SERVO_COMMAND_COOLDOWN_SECONDS} сек.\n"
+            f"Лимит: {SERVO_MAX_COMMANDS_PER_MINUTE} команд в минуту\n\n"
+            f"Состояние оборудования: {hardware_status}"
         )
 
     def cleanup_old_command_timestamps(self):
         now = time.time()
 
-        while self.command_timestamps and now - self.command_timestamps[0] > 60:
+        while (
+            self.command_timestamps
+            and now - self.command_timestamps[0] > 60
+        ):
             self.command_timestamps.popleft()
 
     def check_rate_limit(self):
-        """
-        Проверяет, можно ли принять новую команду движения.
-        """
         now = time.time()
 
         if getattr(self.servo_controller, "busy", False):
@@ -169,10 +199,14 @@ class TDMServoCommandListener:
         seconds_after_last = now - self.last_servo_command_time
 
         if seconds_after_last < SERVO_COMMAND_COOLDOWN_SECONDS:
-            wait_seconds = int(SERVO_COMMAND_COOLDOWN_SECONDS - seconds_after_last) + 1
+            wait_seconds = int(
+                SERVO_COMMAND_COOLDOWN_SECONDS - seconds_after_last
+            ) + 1
+
             return (
                 False,
-                f"Слишком часто. Подожди ещё примерно {wait_seconds} сек.",
+                f"Слишком часто. Подождите ещё примерно "
+                f"{wait_seconds} сек.",
             )
 
         self.cleanup_old_command_timestamps()
@@ -181,9 +215,9 @@ class TDMServoCommandListener:
             return (
                 False,
                 (
-                    f"Лимит сервоприводов: максимум "
+                    "Достигнут лимит сервоприводов: максимум "
                     f"{SERVO_MAX_COMMANDS_PER_MINUTE} команд в минуту. "
-                    "Подожди, чтобы провода и сервоприводы не грелись."
+                    "Подождите, чтобы сервоприводы и провода не грелись."
                 ),
             )
 
@@ -191,65 +225,46 @@ class TDMServoCommandListener:
 
     def register_accepted_servo_command(self):
         now = time.time()
+
         self.last_servo_command_time = now
         self.command_timestamps.append(now)
 
     def safe_send_text(self, message):
         try:
-            self.tdm_client.send_text_message(message)
+            success = self.tdm_client.send_text_message(message)
+
+            if not success:
+                print("[TDM SERVO] TDM не подтвердил отправку ответа")
+
+            return success
+
         except Exception as error:
             print("[TDM SERVO SEND ERROR]", error)
-
-    def send_completion_photo(self, command_text: str, result_text: str):
-        """
-        Берёт последний кадр с камеры, сохраняет фото с меткой команды
-        и ставит его в очередь отправки в TDM.
-        """
-        try:
-            frame = self.get_latest_frame_func()
-
-            if frame is None:
-                # fallback: пробуем взять новый кадр прямо с камеры
-                frame = self.camera.read_frame()
-
-            if frame is None:
-                self.safe_send_text(
-                    "Команда выполнена, но не удалось получить кадр с камеры для фото."
-                )
-                return
-
-            photo_path = self.camera.save_servo_command_photo(
-                frame=frame,
-                command_text=command_text,
-                result_text=result_text,
-            )
-
-            message = (
-                "Команда выполнена.\n"
-                f"Команда: {command_text}\n"
-                f"Результат: {result_text}"
-            )
-
-            self.enqueue_photo_func(photo_path, message)
-
-        except Exception as error:
-            self.safe_send_text(
-                "Команда выполнена, но фото после поворота отправить не удалось: "
-                f"{error}"
-            )
+            return False
 
     def handle_message(self, message):
-        message_id = int(message.get("id", 0))
+        message_id = self.message_id(message)
         text = message.get("message", "")
+
+        if message_id <= 0:
+            print("[TDM SERVO] Message without valid ID:", message)
+            return
 
         if message_id <= self.last_processed_message_id:
             return
+
+        print(
+            f"[TDM SERVO] Checking message "
+            f"id={message_id}, text={text!r}"
+        )
 
         try:
             parsed = self.parse_servo_command(text)
 
         except ValueError as error:
-            self.safe_send_text(f"Ошибка команды сервоприводов: {error}")
+            self.safe_send_text(
+                f"Ошибка команды сервоприводов: {error}"
+            )
             self.last_processed_message_id = message_id
             return
 
@@ -259,7 +274,10 @@ class TDMServoCommandListener:
 
         action, angle_1, angle_2 = parsed
 
-        print(f"[TDM SERVO] command from message {message_id}: {text}")
+        print(
+            f"[TDM SERVO] Servo command from message "
+            f"{message_id}: {text}"
+        )
 
         if action == "help":
             self.safe_send_text(self.help_text())
@@ -269,73 +287,113 @@ class TDMServoCommandListener:
         if action == "off":
             try:
                 self.servo_controller.disable_all()
+
                 self.safe_send_text(
                     "PWM-сигнал сервоприводов отключён. "
                     "Сервоприводы не должны удерживать позицию и греться."
                 )
 
             except Exception as error:
-                self.safe_send_text(f"Ошибка отключения сервоприводов: {error}")
+                self.safe_send_text(
+                    f"Ошибка отключения сервоприводов: {error}"
+                )
 
+            self.last_processed_message_id = message_id
+            return
+
+        # Для движения контроллер должен быть открыт.
+        if getattr(self.servo_controller, "bus", None) is None:
+            self.safe_send_text(
+                "Команда принята, но PCA9685 не инициализирована. "
+                "Проверьте I²C, питание платы и вывод команды "
+                "'sudo i2cdetect -y 1'."
+            )
             self.last_processed_message_id = message_id
             return
 
         allowed, reason = self.check_rate_limit()
 
         if not allowed:
-            self.safe_send_text(f"Команда сервоприводов отклонена: {reason}")
+            self.safe_send_text(
+                f"Команда сервоприводов отклонена: {reason}"
+            )
             self.last_processed_message_id = message_id
             return
 
         self.register_accepted_servo_command()
 
         if action == "center":
-            command_text = "/servo center"
-            self.safe_send_text("Принял команду: возвращаю сервоприводы в центр.")
-
-            def callback(success, result_message):
-                if success:
-                    self.send_completion_photo(command_text, result_message)
-                else:
-                    self.safe_send_text(result_message)
-
-            self.servo_controller.center_async(callback=callback)
-
-        elif action == "move":
-            command_text = f"/servo {angle_1} {angle_2}"
             self.safe_send_text(
-                f"Принял команду: поворачиваю сервоприводы на {angle_1}° и {angle_2}°."
+                "Принял команду: возвращаю сервоприводы в центр."
             )
 
-            def callback(success, result_message):
-                if success:
-                    self.send_completion_photo(command_text, result_message)
-                else:
-                    self.safe_send_text(result_message)
+            def center_callback(success, result_message):
+                self.safe_send_text(result_message)
+
+            self.servo_controller.center_async(
+                callback=center_callback
+            )
+
+        elif action == "move":
+            self.safe_send_text(
+                "Принял команду: поворачиваю сервоприводы "
+                f"на {angle_1}° и {angle_2}°."
+            )
+
+            def move_callback(success, result_message):
+                self.safe_send_text(result_message)
 
             self.servo_controller.move_to_angles_async(
                 angle_1,
                 angle_2,
-                callback=callback,
+                callback=move_callback,
             )
 
         self.last_processed_message_id = message_id
 
     def run_forever(self, stop_event):
         """
-        Простой тестовый вариант: опрашиваем непрочитанные сообщения.
+        Периодически получает непрочитанные сообщения TDM.
+
+        Сообщения обязательно сортируются по возрастанию ID.
+        Иначе новое сообщение может помешать обработке более старой
+        команды.
         """
+
         print("[TDM SERVO] Listener started")
+        print(
+            f"[TDM SERVO] Poll interval: "
+            f"{self.poll_interval_seconds} seconds"
+        )
 
         while not stop_event.is_set():
             try:
                 messages = self.tdm_client.get_all_unread_messages()
 
-                for message in messages:
-                    self.handle_message(message)
+                if messages:
+                    messages = sorted(
+                        messages,
+                        key=self.message_id,
+                    )
 
-                if self.last_processed_message_id > 0:
-                    self.tdm_client.confirm_messages(self.last_processed_message_id)
+                    print(
+                        f"[TDM SERVO] Received "
+                        f"{len(messages)} unread message(s)"
+                    )
+
+                    for message in messages:
+                        self.handle_message(message)
+
+                    if self.last_processed_message_id > 0:
+                        confirmed = self.tdm_client.confirm_messages(
+                            self.last_processed_message_id
+                        )
+
+                        if not confirmed:
+                            print(
+                                "[TDM SERVO] Не удалось подтвердить "
+                                "обработанные сообщения"
+                            )
 
             except Exception as error:
                 print("[TDM SERVO ERROR]", error)
