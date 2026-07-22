@@ -592,6 +592,13 @@ def main() -> None:
                     error,
                 )
 
+        if SERVO_ENABLED:
+            try:
+                servo_controller.close()
+            except Exception as error:
+                print("[SERVO CLOSE ERROR]", error)
+
+        
         print("[MAIN] Stopped")
 
 
