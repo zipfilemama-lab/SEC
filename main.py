@@ -31,6 +31,9 @@ from camera_motion import CameraMotionDetector
 from tdm_client import TDMClient
 from wifi_scanner import WiFiScannerReporter
 
+from servo_controller import ServoController
+from tdm_servo_commands import TDMServoCommandListener
+
 
 send_queue: queue.Queue = queue.Queue(maxsize=10)
 stop_event = threading.Event()
@@ -424,14 +427,47 @@ def main() -> None:
         thread.start()
         camera_threads.append(thread)
 
+
+    servo_controller = ServoController()
+    servo_command_thread = None
+    
     if SERVO_ENABLED:
-        print(
-            "[SERVO] SERVO_ENABLED=true, "
-            "но управление сервоприводами в режиме "
-            "двух камер пока не запускается."
-        )
+        try:
+            servo_controller.open()
+            print("[SERVO] PCA9685 initialized")
+    
+        except Exception as error:
+            print("[SERVO START ERROR]", error)
+            print(
+                "[SERVO] PCA9685 не подключена, "
+                "но обработчик команд будет запущен."
+            )
+    
+        try:
+            servo_command_listener = TDMServoCommandListener(
+                tdm_client=tdm_client,
+                servo_controller=servo_controller,
+                poll_interval_seconds=5,
+            )
+    
+            servo_command_thread = threading.Thread(
+                target=servo_command_listener.run_forever,
+                args=(stop_event,),
+                daemon=True,
+                name="tdm-servo-commands",
+            )
+    
+            servo_command_thread.start()
+    
+            print("[SERVO] TDM command listener started")
+    
+        except Exception as error:
+            print("[SERVO LISTENER ERROR]", error)
+    
     else:
         print("[SERVO] Disabled")
+
+    
 
     last_temp_sample_time = 0.0
     temp_sample_interval = 30
